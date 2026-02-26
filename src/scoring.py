@@ -320,11 +320,11 @@ def format_report(score: DifficultyScore) -> str:
 
 
 def format_ranking(results: list[DifficultyScore]) -> str:
-    """Return a detailed comparative ranking showing how each podcast score was calculated.
+    """Return a concise comparative ranking table.
 
-    For every podcast (sorted easiest → hardest), this shows the component
-    averages, the weight applied to each, and the weighted contribution so
-    the user can see exactly which factors drive the final score.
+    Shows all podcasts (easiest → hardest) in a single table with one row
+    per podcast and short column headers for each scoring component,
+    followed by a key that explains each column and its weight.
     """
     ranked = sorted(results, key=lambda r: r.overall_score)
     weights = dict(config.SCORING_WEIGHTS)
@@ -345,56 +345,70 @@ def format_ranking(results: list[DifficultyScore]) -> str:
         for k in llm_keys:
             weights[k] = 0.0
 
-    # Friendly display names
-    display_names: dict[str, str] = {
-        "speech_rate": "Speech rate (WPM)",
-        "vocabulary_level": "Vocabulary (outside 5k)",
-        "lexical_diversity": "Lexical diversity (TTR)",
-        "sentence_length": "Sentence length",
-        "grammar_complexity": "Grammar complexity",
-        "slang_score": "Slang usage (LLM)",
-        "topic_complexity": "Topic complexity (LLM)",
-        "clarity": "Clarity (Whisper conf.)",
-    }
+    # Column definitions: (key, short_header, full_description)
+    columns: list[tuple[str, str, str]] = [
+        ("speech_rate",       "SPD",  "Speech rate (words per minute)"),
+        ("vocabulary_level",  "VOC",  "Vocabulary level (% outside top-5k)"),
+        ("lexical_diversity", "LEX",  "Lexical diversity (MATTR)"),
+        ("sentence_length",   "SEN",  "Sentence length (avg words/sentence)"),
+        ("grammar_complexity","GRM",  "Grammar complexity (parse depth)"),
+        ("slang_score",       "SLG",  "Slang usage (LLM)"),
+        ("topic_complexity",  "TOP",  "Topic complexity (LLM)"),
+        ("clarity",           "CLR",  "Clarity (Whisper confidence)"),
+    ]
+
+    # Filter to active columns (non-zero weight)
+    active = [(k, hdr, desc) for k, hdr, desc in columns if weights.get(k, 0) > 0]
+
+    # Find the longest podcast title for the name column
+    max_title = max((len(r.podcast_title) for r in ranked), default=10)
+    name_w = min(max(max_title, 10), 40)  # clamp 10–40
+
+    # Build header
+    hdr_parts = [f"{'#':>3s}  {'Podcast':<{name_w}s}  {'Score':>5s}  {'CEFR':>4s}  {'Ep':>2s}"]
+    for _, hdr, _ in active:
+        hdr_parts.append(f"  {hdr:>5s}")
+    header = "".join(hdr_parts)
+    sep = "─" * len(header)
 
     lines: list[str] = [
         "",
-        "=" * 70,
-        "  COMPARATIVE RANKING  (easiest → hardest)",
-        "=" * 70,
+        sep,
+        "  RANKING  (easiest → hardest)",
+        sep,
+        header,
+        sep,
     ]
 
     for rank, r in enumerate(ranked, 1):
         cefr = r.cefr_estimate or "??"
-        lines.append(
-            f"\n  {rank}. {r.podcast_title}  —  {r.overall_score:.3f}  [{cefr}]"
-            f"  ({r.episodes_analyzed} episodes)"
-        )
+        title = r.podcast_title[:name_w]
+        row = [f"{rank:>3d}  {title:<{name_w}s}  {r.overall_score:5.3f}  {cefr:>4s}  {r.episodes_analyzed:>2d}"]
+        for key, _, _ in active:
+            val = r.component_scores.get(key, 0.0)
+            row.append(f"  {val:5.3f}")
+        lines.append("".join(row))
         if r.trimmed_episodes:
-            lines.append(
-                f"     Trimmed outliers: {', '.join(r.trimmed_episodes)}"
-            )
+            lines.append(f"{'':>{3 + 2 + name_w}}  ↳ trimmed: {', '.join(r.trimmed_episodes)}")
 
-        # Score breakdown table
-        lines.append(f"     {'Component':<28s} {'Avg':>5s}  x  {'Wt':>5s}  =  {'Contrib':>7s}")
-        lines.append(f"     {'─' * 55}")
-        running_total = 0.0
-        for key in sorted(r.component_scores.keys()):
-            w = weights.get(key, 0.0)
-            if w == 0.0:
-                continue
-            val = r.component_scores[key]
-            contrib = val * w
-            running_total += contrib
-            name = display_names.get(key, key)
-            lines.append(
-                f"     {name:<28s} {val:5.3f}  x  {w:5.2f}  =  {contrib:7.4f}"
-            )
-        lines.append(f"     {'─' * 55}")
-        lines.append(
-            f"     {'TOTAL':<28s}                    {running_total:7.4f}"
-        )
+    lines.append(sep)
+
+    # Weight key
+    lines.append("")
+    lines.append("  WEIGHTS KEY  (component scores are 0–1; higher = harder)")
+    lines.append(f"  {'Col':>5s}  {'Wt':>5s}  Description")
+    lines.append(f"  {'───':>5s}  {'───':>5s}  {'─' * 40}")
+    for key, hdr, desc in active:
+        w = weights[key]
+        lines.append(f"  {hdr:>5s}  {w:5.2f}  {desc}")
+    lines.append(f"  {'':>5s}  {'─────':>5s}")
+    lines.append(f"  {'':>5s}  {sum(weights[k] for k, _, _ in active):5.2f}  TOTAL")
+
+    if not has_llm:
+        lines.append("")
+        lines.append("  * LLM components excluded — weights redistributed to structural metrics.")
+        lines.append("    Use --use-llm or --local-llm for full analysis.")
 
     lines.append("")
-    lines.append("=" * 70)
+    lines.append(sep)
     return "\n".join(lines)

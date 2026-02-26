@@ -26,6 +26,15 @@ fi
 
 echo "[SETUP] Using Python: $($PYTHON --version 2>&1)"
 
+# Check Python version is 3.10-3.12 (spaCy 3.x does not support 3.13+)
+PY_VER=$($PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+PY_MAJOR=${PY_VER%%.*}
+PY_MINOR=${PY_VER##*.}
+if [ "$PY_MAJOR" -ne 3 ] || [ "$PY_MINOR" -lt 10 ] || [ "$PY_MINOR" -ge 13 ]; then
+    echo "[ERROR] Python 3.10-3.12 required (detected $PY_VER). spaCy 3.x does not support Python 3.13+."
+    exit 1
+fi
+
 # ----------------------------------------------------------
 #  2. Create virtualenv if it doesn't exist
 # ----------------------------------------------------------

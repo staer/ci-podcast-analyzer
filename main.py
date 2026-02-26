@@ -41,10 +41,22 @@ Usage examples:
 
 from __future__ import annotations
 
+import sys
+
+# ---- Python version guard ------------------------------------------------
+# spaCy 3.x requires Python >=3.9, <3.13.  We target 3.10+ for modern syntax.
+_v = sys.version_info
+if _v < (3, 10) or _v >= (3, 13):
+    sys.exit(
+        f"[ERROR] Python 3.10–3.12 is required (detected {_v.major}.{_v.minor}).\n"
+        "        spaCy 3.x does not yet support Python 3.13+.\n"
+        "        Install a compatible version from https://www.python.org/downloads/"
+    )
+# --------------------------------------------------------------------------
+
 import argparse
 import json
 import logging
-import sys
 
 import config
 from src.cache import (

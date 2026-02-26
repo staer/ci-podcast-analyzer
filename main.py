@@ -74,7 +74,7 @@ from src.transcribe import transcribe_episode, save_transcript
 from src.analyze import analyze_structure
 from src.llm_analyze import analyze_with_llm
 from src.models import DifficultyScore, EpisodeAnalysis
-from src.scoring import compute_podcast_score, format_report
+from src.scoring import compute_podcast_score, format_ranking, format_report
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -365,16 +365,7 @@ def main() -> None:
             print(format_report(score))
 
         if len(results) > 1:
-            print("\n" + "=" * 60)
-            print("  COMPARATIVE RANKING (easiest -> hardest)")
-            print("=" * 60)
-            ranked = sorted(results, key=lambda r: r.overall_score)
-            for i, r in enumerate(ranked, 1):
-                print(
-                    f"  {i}. [{r.cefr_estimate}] {r.overall_score:.3f}  "
-                    f"{r.podcast_title}  ({r.episodes_analyzed} eps)"
-                )
-            print("=" * 60)
+            print(format_ranking(results))
 
         if args.output:
             output_data = [r.model_dump() for r in results]
@@ -442,16 +433,7 @@ def main() -> None:
 
     # If multiple feeds, print a comparison ranking
     if len(results) > 1:
-        print("\n" + "=" * 60)
-        print("  COMPARATIVE RANKING (easiest → hardest)")
-        print("=" * 60)
-        ranked = sorted(results, key=lambda r: r.overall_score)
-        for i, r in enumerate(ranked, 1):
-            print(
-                f"  {i}. [{r.cefr_estimate}] {r.overall_score:.3f}  "
-                f"{r.podcast_title}  ({r.episodes_analyzed} eps)"
-            )
-        print("=" * 60)
+        print(format_ranking(results))
 
     # Save JSON output
     if args.output:

@@ -316,3 +316,84 @@ def format_report(score: DifficultyScore) -> str:
 
     lines.append("=" * 60)
     return "\n".join(lines)
+
+
+def format_ranking(results: list[DifficultyScore]) -> str:
+    """Return a detailed comparative ranking showing how each podcast score was calculated.
+
+    For every podcast (sorted easiest → hardest), this shows the component
+    averages, the weight applied to each, and the weighted contribution so
+    the user can see exactly which factors drive the final score.
+    """
+    ranked = sorted(results, key=lambda r: r.overall_score)
+    weights = dict(config.SCORING_WEIGHTS)
+
+    # Detect whether any result has LLM data
+    has_llm = any(
+        any(ea.llm_analysis is not None for ea in r.episode_results)
+        for r in ranked
+    )
+    if not has_llm:
+        # Mirror the redistribution done in compute_podcast_score
+        llm_keys = {"slang_score", "topic_complexity"}
+        llm_weight = sum(weights[k] for k in llm_keys)
+        structural_keys = [k for k in weights if k not in llm_keys]
+        structural_total = sum(weights[k] for k in structural_keys)
+        for k in structural_keys:
+            weights[k] = weights[k] / structural_total * (structural_total + llm_weight)
+        for k in llm_keys:
+            weights[k] = 0.0
+
+    # Friendly display names
+    display_names: dict[str, str] = {
+        "speech_rate": "Speech rate (WPM)",
+        "vocabulary_level": "Vocabulary (outside 5k)",
+        "lexical_diversity": "Lexical diversity (TTR)",
+        "sentence_length": "Sentence length",
+        "grammar_complexity": "Grammar complexity",
+        "slang_score": "Slang usage (LLM)",
+        "topic_complexity": "Topic complexity (LLM)",
+        "clarity": "Clarity (Whisper conf.)",
+    }
+
+    lines: list[str] = [
+        "",
+        "=" * 70,
+        "  COMPARATIVE RANKING  (easiest → hardest)",
+        "=" * 70,
+    ]
+
+    for rank, r in enumerate(ranked, 1):
+        cefr = r.cefr_estimate or "??"
+        lines.append(
+            f"\n  {rank}. {r.podcast_title}  —  {r.overall_score:.3f}  [{cefr}]"
+            f"  ({r.episodes_analyzed} episodes)"
+        )
+        if r.trimmed_episodes:
+            lines.append(
+                f"     Trimmed outliers: {', '.join(r.trimmed_episodes)}"
+            )
+
+        # Score breakdown table
+        lines.append(f"     {'Component':<28s} {'Avg':>5s}  x  {'Wt':>5s}  =  {'Contrib':>7s}")
+        lines.append(f"     {'─' * 55}")
+        running_total = 0.0
+        for key in sorted(r.component_scores.keys()):
+            w = weights.get(key, 0.0)
+            if w == 0.0:
+                continue
+            val = r.component_scores[key]
+            contrib = val * w
+            running_total += contrib
+            name = display_names.get(key, key)
+            lines.append(
+                f"     {name:<28s} {val:5.3f}  x  {w:5.2f}  =  {contrib:7.4f}"
+            )
+        lines.append(f"     {'─' * 55}")
+        lines.append(
+            f"     {'TOTAL':<28s}                    {running_total:7.4f}"
+        )
+
+    lines.append("")
+    lines.append("=" * 70)
+    return "\n".join(lines)

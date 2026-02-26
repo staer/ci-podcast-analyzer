@@ -1,0 +1,30 @@
+# Virtual environment
+.venv/
+
+# Downloaded / generated data
+data/audio/
+data/transcripts/
+data/cache/
+data/results/
+results.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment / secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db

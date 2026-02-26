@@ -1,0 +1,69 @@
+"""Configuration for the Spanish Podcast Difficulty Analyzer."""
+
+from pathlib import Path
+
+# --- Paths ---
+BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / "data"
+AUDIO_DIR = DATA_DIR / "audio"
+TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
+CACHE_DIR = DATA_DIR / "cache"
+RESULTS_DIR = DATA_DIR / "results"
+
+# Create directories on import
+for d in [AUDIO_DIR, TRANSCRIPTS_DIR, CACHE_DIR, RESULTS_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
+
+# --- Whisper settings ---
+WHISPER_MODEL_SIZE = "small"    # tiny, base, small, medium, large-v3
+WHISPER_DEVICE = "auto"        # "auto", "cpu", or "cuda"
+WHISPER_LANGUAGE = "es"
+WHISPER_BEAM_SIZE = 1           # 1 = greedy (fast), 5 = beam search (accurate)
+WHISPER_COMPUTE_TYPE = "int8"   # int8 (fastest on CPU), float16 (GPU), auto
+WHISPER_CPU_THREADS = 0         # 0 = auto-detect, or set specific core count
+MAX_TRANSCRIBE_MINUTES = 10    # Only transcribe first N minutes per episode (0 = full)
+SKIP_INTRO_SECONDS = 45         # Skip this many seconds at the start (ads/intros)
+
+# --- Feed settings ---
+MAX_EPISODES_PER_FEED = 10      # Hard cap on episodes to consider from the feed
+MIN_EPISODES = 5                # Always analyze at least this many episodes
+TARGET_AUDIO_MINUTES = 60       # Download enough episodes to reach this duration
+MAX_AUDIO_DURATION_MINUTES = 30 # Skip individual episodes longer than this
+DOWNLOAD_TIMEOUT_SECONDS = 300
+
+# --- Scoring settings ---
+# When we have enough episodes, drop the single highest-scoring outlier
+# before averaging.  This prevents one atypical episode from skewing the
+# podcast score.  Set to 0 to disable.
+OUTLIER_TRIM_COUNT = 1
+OUTLIER_TRIM_MIN_EPISODES = 4   # Only trim when we have at least this many
+
+# --- Analysis settings ---
+SPACY_MODEL = "es_core_news_lg"
+# Minimum number of words in a transcript to consider it valid
+MIN_TRANSCRIPT_WORDS = 100
+
+# --- LLM settings ---
+OPENAI_MODEL = "gpt-4o"
+# Maximum transcript characters to send to the LLM (to control cost)
+LLM_MAX_TRANSCRIPT_CHARS = 8000
+
+# --- Local LLM (Ollama) settings ---
+USE_LOCAL_LLM = False
+OLLAMA_BASE_URL = "http://localhost:11434/v1"  # Ollama's OpenAI-compatible endpoint
+OLLAMA_MODEL = "llama3"  # Model to use (llama3, mistral, gemma2, etc.)
+
+# --- Scoring weights (must sum to 1.0) ---
+# Speech rate and vocabulary are the strongest signals for learner podcasts.
+# Lexical diversity and sentence length are noisy on spoken transcripts
+# (TTR is length-dependent; Whisper punctuation is imperfect).
+SCORING_WEIGHTS = {
+    "speech_rate": 0.20,
+    "vocabulary_level": 0.25,
+    "lexical_diversity": 0.05,
+    "sentence_length": 0.05,
+    "grammar_complexity": 0.10,
+    "slang_score": 0.15,
+    "topic_complexity": 0.10,
+    "clarity": 0.10,
+}

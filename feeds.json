@@ -1,0 +1,42 @@
+{
+  "settings": {
+    "whisper_model": "small",
+    "beam_size": 1,
+    "max_transcribe_minutes": 10,
+    "use_llm": false,
+    "target_audio_minutes": 60,
+    "min_episodes": 5,
+    "max_episodes": 10,
+    "skip_intro_seconds": 45
+  },
+  "feeds": [
+    {
+      "name": "Cuentame",
+      "url": "https://anchor.fm/s/4baec630/podcast/rss"
+    },
+    {
+      "name": "Chill Spanish",
+      "url": "https://anchor.fm/s/51d84fcc/podcast/rss"
+    },
+    {
+      "name": "Espanol al vuelo",
+      "url": "https://anchor.fm/s/f9acaa04/podcast/rss"
+    },
+    {
+      "name": "Espanol a la Mexicana",
+      "url": "https://anchor.fm/s/4d9f5234/podcast/rss"
+    },
+    {
+      "name": "Spanish boost podcast",
+      "url": "https://anchor.fm/s/f95c9410/podcast/rss"
+    },
+    {
+      "name": "Blood and marble",
+      "url": "https://anchor.fm/s/105157894/podcast/rss"
+    },
+    {
+      "name": "Espanol con juan",
+      "url": "https://1001reasonstolearnspanish.com/podcast"
+    }
+  ]
+}

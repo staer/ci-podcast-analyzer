@@ -1,0 +1,10 @@
+feedparser>=6.0
+requests>=2.31
+faster-whisper>=1.0
+spacy>=3.7
+wordfreq>=3.0
+openai>=1.0
+pydantic>=2.0
+pandas>=2.0
+numpy>=1.24
+pytest>=8.0

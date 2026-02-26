@@ -1,0 +1,108 @@
+THIRD-PARTY SOFTWARE NOTICES
+=============================
+
+This project uses the following open-source libraries. Their licenses
+require attribution, which is provided below.
+
+
+faster-whisper (MIT License)
+-----------------------------
+Copyright (c) 2023 SYSTRAN
+https://github.com/SYSTRAN/faster-whisper
+
+Licensed under the MIT License.
+
+
+CTranslate2 (MIT License)
+--------------------------
+Copyright (c) 2020 OpenNMT
+https://github.com/OpenNMT/CTranslate2
+
+Licensed under the MIT License.
+
+
+spaCy (MIT License)
+--------------------
+Copyright (c) 2016-2024 Explosion AI GmbH
+https://spacy.io
+
+Licensed under the MIT License.
+
+
+pydantic (MIT License)
+-----------------------
+Copyright (c) 2017-2024 Samuel Colvin and other contributors
+https://github.com/pydantic/pydantic
+
+Licensed under the MIT License.
+
+
+pytest (MIT License)
+---------------------
+Copyright (c) 2004 Holger Krekel and others
+https://docs.pytest.org
+
+Licensed under the MIT License.
+
+
+feedparser (BSD License)
+-------------------------
+Copyright (c) 2010-2024 Kurt McKee
+https://github.com/kurtmckee/feedparser
+
+Licensed under the BSD 2-Clause License.
+
+
+numpy (BSD-3-Clause License)
+------------------------------
+Copyright (c) 2005-2024 NumPy Developers
+https://numpy.org
+
+Licensed under the BSD 3-Clause License.
+
+
+pandas (BSD-3-Clause License)
+------------------------------
+Copyright (c) 2008-2024 AQR Capital Management, LLC, Lambda Foundry, Inc.
+and PyData Development Team
+https://pandas.pydata.org
+
+Licensed under the BSD 3-Clause License.
+
+
+requests (Apache License 2.0)
+------------------------------
+Copyright (c) 2024 Kenneth Reitz
+https://requests.readthedocs.io
+
+Licensed under the Apache License, Version 2.0. You may obtain a copy of the
+License at: http://www.apache.org/licenses/LICENSE-2.0
+
+
+openai (Apache License 2.0)
+-----------------------------
+Copyright (c) 2024 OpenAI
+https://github.com/openai/openai-python
+
+Licensed under the Apache License, Version 2.0. You may obtain a copy of the
+License at: http://www.apache.org/licenses/LICENSE-2.0
+
+
+wordfreq (Apache License 2.0)
+-------------------------------
+Copyright (c) 2015-2024 Robyn Speer / Luminoso Technologies
+https://github.com/rspeer/wordfreq
+
+Licensed under the Apache License, Version 2.0. You may obtain a copy of the
+License at: http://www.apache.org/licenses/LICENSE-2.0
+
+
+spaCy Model: es_core_news_lg
+------------------------------
+The Spanish language model is distributed by Explosion AI under the
+MIT License. It is trained on data from the AnCora treebank and
+Universal Dependencies, which are distributed under their own open
+licenses (CC BY-NC-SA 3.0 for AnCora, CC BY-SA 4.0 for UD).
+
+The model is used here for inference only. No model data is
+redistributed with this project; it is downloaded at install time.

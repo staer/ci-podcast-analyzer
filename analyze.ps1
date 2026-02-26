@@ -25,6 +25,14 @@ if (Get-Command python -ErrorAction SilentlyContinue) {
 
 Write-Host "[SETUP] Using Python: $(& $Python --version 2>&1)"
 
+# Check Python version is 3.10-3.12 (spaCy 3.x does not support 3.13+)
+$PyVer = & $Python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+$PyMajor, $PyMinor = $PyVer -split '\.'
+if ([int]$PyMajor -ne 3 -or [int]$PyMinor -lt 10 -or [int]$PyMinor -ge 13) {
+    Write-Error "[ERROR] Python 3.10-3.12 required (detected $PyVer). spaCy 3.x does not support Python 3.13+."
+    exit 1
+}
+
 # ----------------------------------------------------------
 #  2. Create virtualenv if it doesn't exist
 # ----------------------------------------------------------

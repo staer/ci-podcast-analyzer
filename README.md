@@ -46,7 +46,7 @@ When LLM is disabled (default), the slang and topic weights are redistributed pr
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10–3.12 (spaCy 3.x does not yet support 3.13+)
 - ~2 GB disk space for models (downloaded automatically on first run)
 - **Optional:** NVIDIA GPU with CUDA for faster transcription (see [GPU Setup](#gpu-setup))
 

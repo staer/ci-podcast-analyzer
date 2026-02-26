@@ -74,12 +74,12 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
             "Transcript too short (%d words) for reliable analysis", total_words
         )
 
-    # Lexical diversity: exclude proper nouns so names/places don't distort
-    # the type-token ratio.
+    # Lexical diversity: use Moving-Average TTR (MATTR) to avoid
+    # inflated scores on short transcripts.  MATTR computes TTR over a
+    # sliding window of fixed size and averages the results, making the
+    # metric comparable across transcripts of different lengths.
     common_words = [t.text.lower() for t in tokens if t.pos_ != "PROPN"]
-    unique_common = len(set(common_words))
-    total_common = len(common_words) or 1
-    lexical_diversity = unique_common / total_common
+    lexical_diversity = _mattr(common_words, window=config.MATTR_WINDOW_SIZE)
     unique_words = len(set(words))
 
     # --- Speech rate ---
@@ -174,6 +174,30 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _mattr(words: list[str], window: int = 200) -> float:
+    """Compute Moving-Average Type-Token Ratio.
+
+    Slides a window of *window* words across *words*, computes TTR for
+    each position, and returns the mean.  This removes the bias that
+    makes plain TTR artificially high on short texts.
+
+    If the text is shorter than *window*, falls back to plain TTR.
+    """
+    n = len(words)
+    if n == 0:
+        return 0.0
+    if n <= window:
+        return len(set(words)) / n
+
+    ttr_sum = 0.0
+    count = 0
+    for i in range(n - window + 1):
+        segment = words[i : i + window]
+        ttr_sum += len(set(segment)) / window
+        count += 1
+    return ttr_sum / count
+
 
 def _tree_depth(token) -> int:
     """Compute the depth of a dependency parse tree rooted at *token*."""

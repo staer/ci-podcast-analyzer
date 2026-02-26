@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.analyze import _tree_depth, analyze_structure
+from src.analyze import _mattr, _tree_depth, analyze_structure
 from src.models import Transcription, TranscriptionSegment
 
 
@@ -68,7 +68,7 @@ class TestSpeechRate:
 # ===================================================================
 
 class TestLexicalDiversity:
-    """Type-token ratio."""
+    """MATTR-based lexical diversity."""
 
     def test_all_same_word(self):
         """Repeating the same word → low diversity."""
@@ -91,6 +91,23 @@ class TestLexicalDiversity:
         t = _make_transcription(text)
         m = analyze_structure(t)
         assert m.lexical_diversity > 0.5
+
+    def test_short_vs_long_not_dramatically_different(self):
+        """MATTR should produce comparable values for short and long texts
+        with the same vocabulary mix (unlike plain TTR)."""
+        # Build a repeating block of mixed words
+        block = [
+            "el", "perro", "grande", "come", "la", "comida", "en",
+            "una", "casa", "bonita", "cerca", "del", "parque",
+        ]
+        short_text = " ".join(block * 25)   # ~325 words
+        long_text = " ".join(block * 150)   # ~1950 words
+        t_short = _make_transcription(short_text)
+        t_long = _make_transcription(long_text)
+        m_short = analyze_structure(t_short)
+        m_long = analyze_structure(t_long)
+        # With MATTR these should be close; with plain TTR they'd diverge.
+        assert abs(m_short.lexical_diversity - m_long.lexical_diversity) < 0.15
 
 
 # ===================================================================
@@ -215,6 +232,45 @@ class TestSegmentConfidence:
         t = _make_transcription("hola", segments=segs)
         m = analyze_structure(t)
         assert m.avg_segment_confidence == 0.0
+
+
+# ===================================================================
+# MATTR (Moving-Average TTR)
+# ===================================================================
+
+class TestMATTR:
+    """Unit tests for the _mattr helper."""
+
+    def test_empty_list(self):
+        assert _mattr([], window=50) == 0.0
+
+    def test_single_word(self):
+        assert _mattr(["hola"], window=50) == pytest.approx(1.0)
+
+    def test_all_same_word(self):
+        words = ["casa"] * 300
+        result = _mattr(words, window=100)
+        assert result == pytest.approx(1 / 100)  # 1 unique in each window
+
+    def test_all_unique(self):
+        words = [f"word{i}" for i in range(300)]
+        result = _mattr(words, window=100)
+        assert result == pytest.approx(1.0)  # every window has 100 unique
+
+    def test_shorter_than_window_falls_back_to_ttr(self):
+        words = ["hola", "mundo", "hola"]
+        result = _mattr(words, window=100)
+        # Fallback to plain TTR: 2 unique / 3 total
+        assert result == pytest.approx(2 / 3)
+
+    def test_stable_across_lengths(self):
+        """Same vocabulary pattern at different lengths should give similar MATTR."""
+        pattern = ["el", "perro", "come", "la", "comida"] * 10  # 50 words, repeated
+        short = pattern * 5   # 250 words
+        long = pattern * 40   # 2000 words
+        mattr_short = _mattr(short, window=50)
+        mattr_long = _mattr(long, window=50)
+        assert abs(mattr_short - mattr_long) < 0.05
 
 
 # ===================================================================

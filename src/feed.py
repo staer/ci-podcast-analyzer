@@ -78,7 +78,10 @@ def _sample_episodes(candidates: list[Episode]) -> list[Episode]:
     Strategy:
     - Partition candidates into those with existing cached transcriptions
       and those without
-    - Pick cached episodes first (shuffled), then new episodes (shuffled)
+    - Within each partition, prefer longer episodes when most episodes are
+      short (< PREFER_LONGER_THRESHOLD), since longer transcripts produce
+      more reliable structural metrics
+    - Pick cached episodes first, then new episodes
     - Pick episodes until we reach the target duration
     - Always pick at least MIN_EPISODES (even if that exceeds the target)
     - If no duration metadata is available, fall back to MIN_EPISODES
@@ -89,11 +92,15 @@ def _sample_episodes(candidates: list[Episode]) -> list[Episode]:
     from src.cache import _transcription_path, current_whisper_params
     params = current_whisper_params()
 
-    # Partition: cached first, then fresh (both shuffled internally)
+    # Partition: cached first, then fresh
     cached = [ep for ep in candidates if _transcription_path(ep.url, params).exists()]
     fresh = [ep for ep in candidates if ep not in cached]
-    random.shuffle(cached)
-    random.shuffle(fresh)
+
+    # Within each partition, prefer longer episodes when the feed is
+    # dominated by short ones.  This improves transcript quality for
+    # metrics like lexical diversity that are noisy on very short texts.
+    cached = _sort_prefer_longer(cached)
+    fresh = _sort_prefer_longer(fresh)
     ordered = cached + fresh
 
     if cached:
@@ -130,6 +137,43 @@ def _sample_episodes(candidates: list[Episode]) -> list[Episode]:
         min_eps,
     )
     return selected
+
+
+def _sort_prefer_longer(episodes: list[Episode]) -> list[Episode]:
+    """Sort episodes so longer ones come first when most are short.
+
+    When the median duration is below PREFER_LONGER_THRESHOLD, sort
+    descending by duration so the sampler picks longer (more analytically
+    reliable) episodes first.  Otherwise, shuffle randomly as before.
+
+    Episodes without duration metadata are placed at the end.
+    """
+    threshold = getattr(config, "PREFER_LONGER_THRESHOLD", 0)
+    if not threshold or not episodes:
+        random.shuffle(episodes)
+        return episodes
+
+    durations = [ep.duration_seconds for ep in episodes if ep.duration_seconds]
+    if not durations:
+        random.shuffle(episodes)
+        return episodes
+
+    median_dur = sorted(durations)[len(durations) // 2]
+
+    if median_dur < threshold:
+        # Prefer longer episodes — sort descending, with None-duration at end
+        logger.info(
+            "Median episode duration %.0fs < %ds threshold — preferring longer episodes",
+            median_dur, threshold,
+        )
+        return sorted(
+            episodes,
+            key=lambda ep: ep.duration_seconds if ep.duration_seconds else 0.0,
+            reverse=True,
+        )
+    else:
+        random.shuffle(episodes)
+        return episodes
 
 
 def download_episode(episode: Episode, output_dir: Path | None = None) -> Episode:

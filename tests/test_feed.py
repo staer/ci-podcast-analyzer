@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 import config
-from src.feed import _sample_episodes
+from src.feed import _sample_episodes, _sort_prefer_longer
 from src.models import Episode
 
 
@@ -78,7 +78,8 @@ class TestSampleEpisodes:
         """Multiple calls should sometimes produce different orderings."""
         monkeypatch.setattr(config, "MIN_EPISODES", 2)
         monkeypatch.setattr(config, "TARGET_AUDIO_MINUTES", 5)
-        episodes = _make_episodes(20, duration=60.0)
+        # Use durations above PREFER_LONGER_THRESHOLD so episodes are shuffled
+        episodes = _make_episodes(20, duration=700.0)
 
         # Run many times and collect the first episode title
         first_titles = set()
@@ -118,8 +119,8 @@ class TestSampleEpisodes:
         monkeypatch.setattr("config.CACHE_DIR", tmp_path)
         monkeypatch.setattr(config, "MIN_EPISODES", 2)
         monkeypatch.setattr(config, "TARGET_AUDIO_MINUTES", 5)
-
-        episodes = _make_episodes(10, duration=300.0)
+        # Use long episodes so length preference doesn't interfere
+        episodes = _make_episodes(10, duration=700.0)
 
         # Create fake cache files for episodes 5 and 6
         from src.cache import _transcription_path, current_whisper_params
@@ -134,3 +135,72 @@ class TestSampleEpisodes:
             selected_urls = {ep.url for ep in selected}
             assert episodes[4].url in selected_urls, "Cached episode 5 should be selected"
             assert episodes[5].url in selected_urls, "Cached episode 6 should be selected"
+
+
+# ===================================================================
+# _sort_prefer_longer
+# ===================================================================
+
+def _make_episodes_varied(durations: list[float | None]) -> list[Episode]:
+    """Create episodes with specific durations."""
+    return [
+        Episode(
+            title=f"Episode {i+1}",
+            url=f"https://example.com/ep{i+1}.mp3",
+            duration_seconds=d,
+        )
+        for i, d in enumerate(durations)
+    ]
+
+
+class TestSortPreferLonger:
+    """Tests for the _sort_prefer_longer helper."""
+
+    def test_short_episodes_sorted_longest_first(self, monkeypatch):
+        """When median < threshold, episodes are sorted longest-first."""
+        monkeypatch.setattr(config, "PREFER_LONGER_THRESHOLD", 600)
+        eps = _make_episodes_varied([120, 300, 180, 240, 60])
+        result = _sort_prefer_longer(eps)
+        durations = [ep.duration_seconds for ep in result]
+        assert durations == [300, 240, 180, 120, 60]
+
+    def test_long_episodes_shuffled(self, monkeypatch):
+        """When median >= threshold, episodes are shuffled (not sorted)."""
+        monkeypatch.setattr(config, "PREFER_LONGER_THRESHOLD", 600)
+        eps = _make_episodes_varied([900, 1200, 800, 1500, 700])
+        # Run many times to confirm it's not always sorted
+        orderings = set()
+        for _ in range(30):
+            result = _sort_prefer_longer(list(eps))
+            orderings.add(tuple(ep.title for ep in result))
+        assert len(orderings) > 1, "Long episodes should be shuffled, not deterministic"
+
+    def test_threshold_zero_always_shuffles(self, monkeypatch):
+        """Setting threshold to 0 disables the preference."""
+        monkeypatch.setattr(config, "PREFER_LONGER_THRESHOLD", 0)
+        eps = _make_episodes_varied([60, 120, 30])
+        orderings = set()
+        for _ in range(30):
+            result = _sort_prefer_longer(list(eps))
+            orderings.add(tuple(ep.title for ep in result))
+        assert len(orderings) > 1, "Should shuffle when threshold is 0"
+
+    def test_no_duration_info_shuffles(self, monkeypatch):
+        """Episodes without duration metadata should just be shuffled."""
+        monkeypatch.setattr(config, "PREFER_LONGER_THRESHOLD", 600)
+        eps = _make_episodes_varied([None, None, None])
+        result = _sort_prefer_longer(eps)
+        assert len(result) == 3
+
+    def test_empty_list(self, monkeypatch):
+        monkeypatch.setattr(config, "PREFER_LONGER_THRESHOLD", 600)
+        assert _sort_prefer_longer([]) == []
+
+    def test_none_durations_sorted_to_end(self, monkeypatch):
+        """Episodes without duration go after those with duration."""
+        monkeypatch.setattr(config, "PREFER_LONGER_THRESHOLD", 600)
+        eps = _make_episodes_varied([None, 300, 120, None])
+        result = _sort_prefer_longer(eps)
+        # The two with durations should come first (longest first)
+        assert result[0].duration_seconds == 300
+        assert result[1].duration_seconds == 120

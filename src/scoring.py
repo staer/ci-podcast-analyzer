@@ -26,8 +26,9 @@ NORM_RANGES: dict[str, tuple[float, float]] = {
     "speech_rate": (40.0, 220.0),
     # Fraction of words outside top-5k frequency list
     "vocabulary_level": (0.0, 0.45),
-    # Type-token ratio (wider range: TTR is inflated on short transcripts)
-    "lexical_diversity": (0.05, 0.65),
+    # MATTR-based lexical diversity (more stable than raw TTR across
+    # different transcript lengths).
+    "lexical_diversity": (0.15, 0.55),
     # Average words per sentence (wider: Whisper punctuation is imperfect)
     "sentence_length": (2.0, 30.0),
     # Average parse-tree depth (wider: spoken Spanish parse trees are deep)

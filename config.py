@@ -29,6 +29,11 @@ MAX_EPISODES_PER_FEED = 20      # Hard cap on episodes to consider from the feed
 MIN_EPISODES = 5                # Always analyze at least this many episodes
 TARGET_AUDIO_MINUTES = 60       # Download enough episodes to reach this duration
 DOWNLOAD_TIMEOUT_SECONDS = 300
+# When episodes are shorter than this threshold (seconds), prefer
+# longer episodes over shorter ones during sampling.  Longer episodes
+# produce more reliable structural metrics (especially lexical diversity).
+# Set to 0 to disable the preference.
+PREFER_LONGER_THRESHOLD = 600   # 10 minutes
 
 # --- Scoring settings ---
 # When we have enough episodes, drop the single highest-scoring outlier
@@ -41,6 +46,10 @@ OUTLIER_TRIM_MIN_EPISODES = 4   # Only trim when we have at least this many
 SPACY_MODEL = "es_core_news_lg"
 # Minimum number of words in a transcript to consider it valid
 MIN_TRANSCRIPT_WORDS = 100
+# MATTR window size for lexical diversity.  Larger = more stable but
+# requires longer transcripts.  200 is a good balance: even the shortest
+# CI podcast episodes (~280 words) produce multiple windows.
+MATTR_WINDOW_SIZE = 200
 
 # --- LLM settings ---
 OPENAI_MODEL = "gpt-4o"

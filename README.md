@@ -6,8 +6,8 @@ Automatically analyzes Spanish-language podcasts and rates them by difficulty le
 
 The analyzer pipeline has four stages:
 
-1. **Feed parsing & download** — Reads the RSS feed, samples episodes to reach a target duration (preferring previously cached episodes), and downloads the audio files.
-2. **Transcription** — Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2-based Whisper) to transcribe Spanish audio with word-level timestamps. Skips the first 45 seconds of each episode to avoid ads/intros.
+1. **Feed parsing & download** — Reads the RSS feed, samples episodes to reach a target duration (preferring previously cached episodes), and downloads the audio files. Long episodes (>20 min) are downloaded but only the first 20 minutes of audio are decoded for transcription.
+2. **Transcription** — Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2-based Whisper) to transcribe Spanish audio with word-level timestamps. Audio is decoded via PyAV and trimmed to the configured limit before transcription, so long episodes don't waste GPU/CPU time. The first 45 seconds of each episode are skipped to avoid ads/intros.
 3. **Structural NLP analysis** — Uses [spaCy](https://spacy.io/) and [wordfreq](https://github.com/rspeer/wordfreq) to compute metrics like speech rate, vocabulary level, grammar complexity, and lexical diversity. Proper nouns (names, places) are excluded so exotic topics don't inflate difficulty.
 4. **Scoring** — Normalises the metrics, trims the highest-scoring outlier episode, and produces a composite 0–1 difficulty score mapped to CEFR levels.
 
@@ -90,11 +90,11 @@ python main.py [OPTIONS] [FEED_URL ...]
 |---|---|---|
 | `--feeds-file`, `-f` | JSON file with feed URLs and settings | — |
 | `--duration`, `-d` | Target audio minutes to sample per feed | 60 |
-| `--episodes`, `-n` | Hard cap on episodes per feed | 10 |
+| `--episodes`, `-n` | Hard cap on episodes per feed | 20 |
 | `--min-episodes` | Minimum episodes even if duration target is met | 5 |
 | `--whisper-model`, `-w` | Whisper model size: `tiny`, `base`, `small`, `medium`, `large-v3` | `small` |
 | `--beam-size` | Beam width for decoding (1 = fast greedy, 5 = accurate) | 1 |
-| `--max-transcribe-minutes` | Only transcribe first N minutes per episode (0 = full) | 10 |
+| `--max-transcribe-minutes` | Only transcribe first N minutes per episode (0 = full) | 20 |
 | `--output`, `-o` | Save results as JSON to a file | — |
 | `--no-cache` | Force re-transcription, ignoring cached results | off |
 | `--rescore` | Rescore all cached episodes using current weights (no downloads) | off |
@@ -141,11 +141,11 @@ The included `feeds.json` has 7 pre-configured Spanish podcast feeds. You can ed
   "settings": {
     "whisper_model": "small",
     "beam_size": 1,
-    "max_transcribe_minutes": 10,
+    "max_transcribe_minutes": 20,
     "use_llm": false,
     "target_audio_minutes": 60,
     "min_episodes": 5,
-    "max_episodes": 10,
+    "max_episodes": 20,
     "skip_intro_seconds": 45
   },
   "feeds": [
@@ -232,7 +232,30 @@ The analyzer prints a human-readable report for each feed:
 ============================================================
 ```
 
-When analyzing multiple feeds, a comparative ranking is printed at the end (easiest → hardest).
+When analyzing multiple feeds, a detailed comparative ranking is printed at the end (easiest → hardest), showing exactly how each component contributed to the final score:
+
+```
+======================================================================
+  COMPARATIVE RANKING  (easiest → hardest)
+======================================================================
+
+  1. Chill Spanish  —  0.248  [A2]  (5 episodes)
+     Component                      Avg  x     Wt  =  Contrib
+     ───────────────────────────────────────────────────────
+     Clarity (Whisper conf.)      0.075  x   0.13  =   0.0100
+     Grammar complexity           0.380  x   0.13  =   0.0507
+     Lexical diversity (TTR)      0.620  x   0.07  =   0.0413
+     Sentence length              0.510  x   0.07  =   0.0340
+     Speech rate (WPM)            0.205  x   0.27  =   0.0547
+     Vocabulary (outside 5k)      0.190  x   0.33  =   0.0633
+     ───────────────────────────────────────────────────────
+     TOTAL                                            0.2540
+
+  2. Blood and Marble  —  0.712  [B2]  (6 episodes)
+     Trimmed outliers: The Twelve Tables
+     ...
+======================================================================
+```
 
 With `--output results.json`, the full data (all metrics, per-episode breakdowns) is saved as JSON for further processing.
 
@@ -315,7 +338,7 @@ faster-whisper uses CTranslate2, which requires CUDA libraries:
    python -c "from ctranslate2 import get_cuda_device_count; print(f'GPUs: {get_cuda_device_count()}')"
    ```
 
-If the check prints `GPUs: 0`, CUDA libraries are not on your PATH. On Windows, ensure `cudnn*.dll` and `cublas*.dll` are in a directory on your PATH (typically `C:\Program Files\NVIDIA\CUDNN\bin`).
+If the check prints `GPUs: 0`, CUDA libraries are not on your PATH. On Windows, the `nvidia-cublas-cu12` pip package is installed automatically (via `requirements.txt`) and the analyzer registers its DLL directory at startup. If you still see errors about `cublas64_12.dll`, ensure `cudnn*.dll` is available (typically in `C:\Program Files\NVIDIA\CUDNN\bin` or via the CUDA Toolkit installer).
 
 ### Overriding auto-detection
 
@@ -331,18 +354,19 @@ python main.py --whisper-model large-v3 --beam-size 5 feed_url
 
 ### Speed comparison
 
-| Hardware | Model | Beam | 10 min audio | Full episode (~25 min) |
-|---|---|---|---|---|
-| CPU (22 cores) | small / int8 | 1 | ~4–6 min | ~12–15 min |
-| GPU (RTX 3080) | medium / float16 | 5 | ~20–30 sec | ~1 min |
-| GPU (RTX 4090) | large-v3 / float16 | 5 | ~10–15 sec | ~30 sec |
+| Hardware | Model | Beam | 20 min audio |
+|---|---|---|---|
+| CPU (22 cores) | small / int8 | 1 | ~8–12 min |
+| GPU (RTX 3080) | medium / float16 | 5 | ~40–60 sec |
+| GPU (RTX 4090) | large-v3 / float16 | 5 | ~20–30 sec |
 
 Times are approximate and depend on audio content (silence, music, speech density).
 
 ## Performance Tips
 
-- **No GPU?** The defaults (`small` model, `int8` compute, `beam_size=1`, 10-min cap) are already optimised for CPU.
+- **No GPU?** The defaults (`small` model, `int8` compute, `beam_size=1`, 20-min cap) are already optimised for CPU.
 - **Have a GPU?** It auto-detects and upgrades settings. Or manually: `--whisper-model large-v3 --beam-size 5`.
+- **Long episodes?** Audio is trimmed to 20 minutes at the decoding stage via PyAV, so even hour-long episodes use minimal memory.
 - **Second run?** Cached transcriptions are reused — takes seconds instead of minutes.
 - **Tuning weights?** Use `--rescore` to instantly re-rank everything from the cache.
 

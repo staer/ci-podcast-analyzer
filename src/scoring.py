@@ -251,6 +251,32 @@ def compute_podcast_score(
     return result
 
 
+WIDTH = 100
+"""Fixed output width shared by format_report and format_ranking."""
+
+
+def _wrap(text: str, indent: int, width: int = WIDTH) -> list[str]:
+    """Word-wrap *text* to *width*, indenting continuation lines."""
+    if len(text) <= width:
+        return [text]
+    prefix = " " * indent
+    result: list[str] = []
+    while text:
+        if len(text) <= width:
+            result.append(text)
+            break
+        # Find last space within width
+        cut = text.rfind(" ", 0, width + 1)
+        if cut <= indent:
+            cut = text.find(" ", indent)
+            if cut == -1:
+                result.append(text)
+                break
+        result.append(text[:cut])
+        text = prefix + text[cut + 1:]
+    return result
+
+
 def format_report(score: DifficultyScore) -> str:
     """Return a human-readable text report for a podcast score."""
     # Detect whether LLM was used
@@ -264,10 +290,12 @@ def format_report(score: DifficultyScore) -> str:
     if score.trimmed_episodes:
         ep_label += f" (+ {len(score.trimmed_episodes)} outlier trimmed)"
 
+    sep = "=" * WIDTH
+
     lines = [
-        "=" * 60,
+        sep,
         f"  Podcast Difficulty Report",
-        "=" * 60,
+        sep,
         f"  Title:    {score.podcast_title}",
         f"  Feed:     {score.feed_url}",
         f"  Episodes: {ep_label}",
@@ -298,7 +326,8 @@ def format_report(score: DifficultyScore) -> str:
     trimmed_set = set(score.trimmed_episodes)
     for i, ea in enumerate(score.episode_results, 1):
         trimmed_tag = "  [TRIMMED]" if ea.episode.title in trimmed_set else ""
-        lines.append(f"  Episode {i}: {ea.episode.title}{trimmed_tag}")
+        title_line = f"  Episode {i}: {ea.episode.title}{trimmed_tag}"
+        lines.extend(_wrap(title_line, indent=4))
         if ea.structural_metrics:
             sm = ea.structural_metrics
             lines.append(
@@ -312,19 +341,20 @@ def format_report(score: DifficultyScore) -> str:
                 f"Topic: {la.topic_complexity:.2f}"
             )
             if la.slang_examples:
-                lines.append(f"    Slang examples: {', '.join(la.slang_examples[:5])}")
+                slang_line = f"    Slang examples: {', '.join(la.slang_examples[:5])}"
+                lines.extend(_wrap(slang_line, indent=6))
         lines.append("")
 
-    lines.append("=" * 60)
+    lines.append(sep)
     return "\n".join(lines)
 
 
 def format_ranking(results: list[DifficultyScore]) -> str:
     """Return a concise comparative ranking table.
 
-    Shows all podcasts (easiest → hardest) in a single table with one row
-    per podcast and short column headers for each scoring component,
-    followed by a key that explains each column and its weight.
+    Fixed-width (120 cols).  Long podcast titles wrap to a continuation
+    line indented under the name column rather than being truncated.
+    A weights key is appended below the table.
     """
     ranked = sorted(results, key=lambda r: r.overall_score)
     weights = dict(config.SCORING_WEIGHTS)
@@ -360,53 +390,84 @@ def format_ranking(results: list[DifficultyScore]) -> str:
     # Filter to active columns (non-zero weight)
     active = [(k, hdr, desc) for k, hdr, desc in columns if weights.get(k, 0) > 0]
 
-    # Find the longest podcast title for the name column
-    max_title = max((len(r.podcast_title) for r in ranked), default=10)
-    name_w = min(max(max_title, 10), 40)  # clamp 10–40
+    # Fixed layout: #(3) + gap(2) + Name(variable) + gap(2) + Score(5) + gap(2) + CEFR(4) + gap(2) + Ep(2)
+    # then each component col = gap(1) + val(5)  →  6 per component
+    meta_w = 3 + 2 + 2 + 5 + 2 + 4 + 2 + 2  # 22 chars for #, Score, CEFR, Ep + gaps
+    comp_w = len(active) * 6                   # 6 chars per component column
+    name_w = WIDTH - meta_w - comp_w           # remainder goes to the name column
 
     # Build header
-    hdr_parts = [f"{'#':>3s}  {'Podcast':<{name_w}s}  {'Score':>5s}  {'CEFR':>4s}  {'Ep':>2s}"]
-    for _, hdr, _ in active:
-        hdr_parts.append(f"  {hdr:>5s}")
-    header = "".join(hdr_parts)
-    sep = "─" * len(header)
+    hdr = f"{'#':>3s}  {'Podcast':<{name_w}s}  {'Score':>5s}  {'CEFR':>4s}  {'Ep':>2s}"
+    for _, h, _ in active:
+        hdr += f" {h:>5s}"
+    sep = "-" * WIDTH
 
     lines: list[str] = [
         "",
         sep,
-        "  RANKING  (easiest → hardest)",
+        "  RANKING  (easiest -> hardest)",
         sep,
-        header,
+        hdr,
         sep,
     ]
 
+    indent = 3 + 2  # rank + gap – continuation lines start under the name
+
     for rank, r in enumerate(ranked, 1):
         cefr = r.cefr_estimate or "??"
-        title = r.podcast_title[:name_w]
-        row = [f"{rank:>3d}  {title:<{name_w}s}  {r.overall_score:5.3f}  {cefr:>4s}  {r.episodes_analyzed:>2d}"]
+        title = r.podcast_title
+
+        # Build the data suffix (Score + CEFR + Ep + components)
+        suffix = f"  {r.overall_score:5.3f}  {cefr:>4s}  {r.episodes_analyzed:>2d}"
         for key, _, _ in active:
             val = r.component_scores.get(key, 0.0)
-            row.append(f"  {val:5.3f}")
-        lines.append("".join(row))
+            suffix += f" {val:5.3f}"
+
+        if len(title) <= name_w:
+            # Fits on one line
+            lines.append(f"{rank:>3d}  {title:<{name_w}s}{suffix}")
+        else:
+            # Word-wrap the title within name_w, then attach the data suffix
+            # to the first chunk and indent continuations under the name column.
+            chunks: list[str] = []
+            remaining = title
+            while remaining:
+                if len(remaining) <= name_w:
+                    chunks.append(remaining)
+                    break
+                cut = remaining.rfind(" ", 0, name_w + 1)
+                if cut <= 0:
+                    cut = remaining.find(" ")
+                    if cut == -1:
+                        chunks.append(remaining)
+                        break
+                chunks.append(remaining[:cut])
+                remaining = remaining[cut + 1:]
+
+            lines.append(f"{rank:>3d}  {chunks[0]:<{name_w}s}{suffix}")
+            for chunk in chunks[1:]:
+                lines.append(f"{'':<{indent}s}{chunk}")
+
         if r.trimmed_episodes:
-            lines.append(f"{'':>{3 + 2 + name_w}}  ↳ trimmed: {', '.join(r.trimmed_episodes)}")
+            trimmed_line = f"{'':<{indent}s}-> trimmed: {', '.join(r.trimmed_episodes)}"
+            lines.extend(_wrap(trimmed_line, indent=indent + 3))
 
     lines.append(sep)
 
     # Weight key
     lines.append("")
-    lines.append("  WEIGHTS KEY  (component scores are 0–1; higher = harder)")
+    lines.append("  WEIGHTS KEY  (component scores are 0-1; higher = harder)")
     lines.append(f"  {'Col':>5s}  {'Wt':>5s}  Description")
-    lines.append(f"  {'───':>5s}  {'───':>5s}  {'─' * 40}")
+    lines.append(f"  {'---':>5s}  {'---':>5s}  {'-' * 40}")
     for key, hdr, desc in active:
         w = weights[key]
         lines.append(f"  {hdr:>5s}  {w:5.2f}  {desc}")
-    lines.append(f"  {'':>5s}  {'─────':>5s}")
+    lines.append(f"  {'':>5s}  {'-----':>5s}")
     lines.append(f"  {'':>5s}  {sum(weights[k] for k, _, _ in active):5.2f}  TOTAL")
 
     if not has_llm:
         lines.append("")
-        lines.append("  * LLM components excluded — weights redistributed to structural metrics.")
+        lines.append("  * LLM components excluded -- weights redistributed to structural metrics.")
         lines.append("    Use --use-llm or --local-llm for full analysis.")
 
     lines.append("")

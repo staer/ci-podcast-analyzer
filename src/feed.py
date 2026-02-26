@@ -49,15 +49,6 @@ def parse_feed(feed_url: str) -> PodcastFeed:
 
         duration = _parse_duration(entry)
 
-        # Skip episodes that are too long
-        if duration and duration > config.MAX_AUDIO_DURATION_MINUTES * 60:
-            logger.info(
-                "Skipping long episode (%d min): %s",
-                duration // 60,
-                entry.get("title"),
-            )
-            continue
-
         candidates.append(
             Episode(
                 title=entry.get("title", "Untitled"),

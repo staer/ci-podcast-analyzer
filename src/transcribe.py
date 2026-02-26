@@ -22,12 +22,53 @@ if sys.platform == "win32":
                 if str(_bin) not in os.environ.get("PATH", ""):
                     os.environ["PATH"] = str(_bin) + os.pathsep + os.environ.get("PATH", "")
 
+import numpy as np
 from faster_whisper import WhisperModel
 
 import config
 from src.models import Episode, Transcription, TranscriptionSegment, WordTimestamp
 
 logger = logging.getLogger(__name__)
+
+# Whisper expects mono 16 kHz float32 audio
+_WHISPER_SAMPLE_RATE = 16_000
+
+
+def _load_audio_trimmed(path: str, max_minutes: float) -> np.ndarray:
+    """Decode audio into a mono 16 kHz float32 ndarray, reading at most *max_minutes*.
+
+    Uses PyAV (already installed as a faster-whisper dependency) so no
+    external ffmpeg binary is required.  For episodes shorter than the
+    limit the full file is returned.
+    """
+    import av  # pyav – already a faster-whisper dependency
+
+    max_samples = int(max_minutes * 60 * _WHISPER_SAMPLE_RATE) if max_minutes > 0 else 0
+
+    container = av.open(path)
+    stream = container.streams.audio[0]
+    # Ask the decoder to output 16 kHz mono s16
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=_WHISPER_SAMPLE_RATE)
+
+    chunks: list[np.ndarray] = []
+    collected = 0
+
+    for frame in container.decode(stream):
+        for resampled in resampler.resample(frame):
+            arr = resampled.to_ndarray().flatten().astype(np.float32) / 32768.0
+            if max_samples > 0 and collected + len(arr) > max_samples:
+                arr = arr[: max_samples - collected]
+                chunks.append(arr)
+                collected += len(arr)
+                break
+            chunks.append(arr)
+            collected += len(arr)
+        if max_samples > 0 and collected >= max_samples:
+            break
+
+    container.close()
+    audio = np.concatenate(chunks) if chunks else np.array([], dtype=np.float32)
+    return audio
 
 # Module-level cache so we only load the model once
 _model: WhisperModel | None = None
@@ -116,8 +157,25 @@ def transcribe_episode(episode: Episode) -> Transcription:
     model = _get_model()
     logger.info("Transcribing: %s", audio.name)
 
+    # For long episodes, decode only the first MAX_TRANSCRIBE_MINUTES of
+    # audio so we don't waste time/memory on hours of content.
+    max_min = config.MAX_TRANSCRIBE_MINUTES
+    if max_min > 0:
+        logger.info(
+            "Loading first %d minutes of audio (trimming long episodes)...",
+            max_min,
+        )
+        audio_data: str | np.ndarray = _load_audio_trimmed(str(audio), max_min)
+        logger.info(
+            "Loaded %.1f s of audio (%.1f MB in memory)",
+            len(audio_data) / _WHISPER_SAMPLE_RATE,
+            audio_data.nbytes / (1024 * 1024),
+        )
+    else:
+        audio_data = str(audio)  # full file path – let Whisper decode it
+
     segments_iter, info = model.transcribe(
-        str(audio),
+        audio_data,
         language=config.WHISPER_LANGUAGE,
         word_timestamps=True,
         vad_filter=True,  # Filter out silence

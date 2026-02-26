@@ -21,14 +21,13 @@ WHISPER_LANGUAGE = "es"
 WHISPER_BEAM_SIZE = 1           # 1 = greedy (fast), 5 = beam search (accurate)
 WHISPER_COMPUTE_TYPE = "int8"   # int8 (fastest on CPU), float16 (GPU), auto
 WHISPER_CPU_THREADS = 0         # 0 = auto-detect, or set specific core count
-MAX_TRANSCRIBE_MINUTES = 10    # Only transcribe first N minutes per episode (0 = full)
+MAX_TRANSCRIBE_MINUTES = 20    # Only transcribe first N minutes per episode (0 = full)
 SKIP_INTRO_SECONDS = 45         # Skip this many seconds at the start (ads/intros)
 
 # --- Feed settings ---
 MAX_EPISODES_PER_FEED = 10      # Hard cap on episodes to consider from the feed
 MIN_EPISODES = 5                # Always analyze at least this many episodes
 TARGET_AUDIO_MINUTES = 60       # Download enough episodes to reach this duration
-MAX_AUDIO_DURATION_MINUTES = 30 # Skip individual episodes longer than this
 DOWNLOAD_TIMEOUT_SECONDS = 300
 
 # --- Scoring settings ---

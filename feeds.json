@@ -2,11 +2,11 @@
   "settings": {
     "whisper_model": "small",
     "beam_size": 1,
-    "max_transcribe_minutes": 10,
+    "max_transcribe_minutes": 20,
     "use_llm": false,
     "target_audio_minutes": 60,
     "min_episodes": 5,
-    "max_episodes": 10,
+    "max_episodes": 20,
     "skip_intro_seconds": 45
   },
   "feeds": [

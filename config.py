@@ -25,7 +25,7 @@ MAX_TRANSCRIBE_MINUTES = 20    # Only transcribe first N minutes per episode (0 
 SKIP_INTRO_SECONDS = 45         # Skip this many seconds at the start (ads/intros)
 
 # --- Feed settings ---
-MAX_EPISODES_PER_FEED = 10      # Hard cap on episodes to consider from the feed
+MAX_EPISODES_PER_FEED = 20      # Hard cap on episodes to consider from the feed
 MIN_EPISODES = 5                # Always analyze at least this many episodes
 TARGET_AUDIO_MINUTES = 60       # Download enough episodes to reach this duration
 DOWNLOAD_TIMEOUT_SECONDS = 300

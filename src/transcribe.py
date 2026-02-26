@@ -3,7 +3,24 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Ensure NVIDIA pip-packaged CUDA libraries (e.g. nvidia-cublas-cu12) are
+# visible to the DLL loader.  Without this, CTranslate2 / faster-whisper
+# cannot find cublas64_12.dll even though the package is installed.
+# ---------------------------------------------------------------------------
+if sys.platform == "win32":
+    _site = Path(sys.prefix, "Lib", "site-packages", "nvidia")
+    if _site.is_dir():
+        for _sub in _site.iterdir():
+            _bin = _sub / "bin"
+            if _bin.is_dir():
+                os.add_dll_directory(str(_bin))
+                if str(_bin) not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = str(_bin) + os.pathsep + os.environ.get("PATH", "")
 
 from faster_whisper import WhisperModel
 

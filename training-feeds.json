@@ -11,8 +11,18 @@
       "group": "easy"
     },
     {
+      "name": "Espanol al vuelo",
+      "url": "https://anchor.fm/s/f9acaa04/podcast/rss",
+      "group": "easy"
+    },
+    {
       "name": "Espanol con Juan",
       "url": "https://1001reasonstolearnspanish.com/podcast",
+      "group": "medium"
+    },
+    {
+      "name": "How to Spanish",
+      "url": "https://anchor.fm/s/10594f934/podcast/rss",
       "group": "medium"
     },
     {

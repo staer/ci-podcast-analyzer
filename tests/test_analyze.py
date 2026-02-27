@@ -19,7 +19,7 @@ from src.analyze import (
     _tree_depth,
     analyze_structure,
 )
-from src.models import Transcription, TranscriptionSegment
+from src.models import Transcription, TranscriptionSegment, WordTimestamp
 
 
 # ===================================================================
@@ -242,6 +242,83 @@ class TestSegmentConfidence:
         t = _make_transcription("hola", segments=segs)
         m = analyze_structure(t)
         assert m.avg_segment_confidence == 0.0
+
+
+# ===================================================================
+# Word-level clarity composite
+# ===================================================================
+
+class TestClarityComposite:
+    """Tests for the word-level clarity_score composite metric."""
+
+    def _make_word(self, word: str, prob: float) -> WordTimestamp:
+        return WordTimestamp(word=word, start=0.0, end=0.1, probability=prob)
+
+    def test_clarity_score_all_high_prob(self):
+        """All words with high probability → low clarity_score."""
+        words = [self._make_word("hola", 0.95), self._make_word("mundo", 0.90)]
+        segs = [
+            TranscriptionSegment(
+                text="hola mundo", start=0, end=1,
+                avg_log_prob=-0.1, words=words,
+            )
+        ]
+        t = _make_transcription("hola mundo", duration_seconds=2.0, segments=segs)
+        m = analyze_structure(t)
+        # low_conf_segment_pct = 0 (avg_log_prob > -0.5)
+        # uncertain_word_pct = 0 (all probs > 0.5)
+        # mean_word_prob ~ 0.925
+        # clarity_score = 0.5*0 + 0.3*0 + 0.2*(1-0.925) = 0.015
+        assert m.clarity_score == pytest.approx(0.015, abs=0.005)
+        assert m.low_conf_segment_pct == 0.0
+        assert m.uncertain_word_pct == 0.0
+
+    def test_clarity_score_all_low_prob(self):
+        """All words with low probability → high clarity_score."""
+        words = [self._make_word("uh", 0.2), self._make_word("hmm", 0.3)]
+        segs = [
+            TranscriptionSegment(
+                text="uh hmm", start=0, end=1,
+                avg_log_prob=-0.8, words=words,
+            )
+        ]
+        t = _make_transcription("uh hmm", duration_seconds=2.0, segments=segs)
+        m = analyze_structure(t)
+        # low_conf_segment_pct = 1.0 (avg_log_prob < -0.5)
+        # uncertain_word_pct = 1.0 (all probs < 0.5)
+        # mean_word_prob = 0.25
+        # clarity_score = 0.5*1 + 0.3*1 + 0.2*0.75 = 0.95
+        assert m.clarity_score == pytest.approx(0.95, abs=0.05)
+        assert m.low_conf_segment_pct == 1.0
+        assert m.uncertain_word_pct == 1.0
+
+    def test_clarity_score_no_words_returns_zero(self):
+        """Segments without word-level data → clarity_score = 0."""
+        segs = [
+            TranscriptionSegment(text="hola", start=0, end=1, avg_log_prob=-0.3)
+        ]
+        t = _make_transcription("hola", duration_seconds=2.0, segments=segs)
+        m = analyze_structure(t)
+        assert m.clarity_score == 0.0
+        assert m.mean_word_prob == 0.0
+
+    def test_clarity_score_mixed_confidence(self):
+        """Mix of high and low confidence words."""
+        words = [
+            self._make_word("hola", 0.95),
+            self._make_word("pues", 0.40),  # uncertain
+        ]
+        segs = [
+            TranscriptionSegment(
+                text="hola pues", start=0, end=1,
+                avg_log_prob=-0.3, words=words,
+            )
+        ]
+        t = _make_transcription("hola pues", duration_seconds=2.0, segments=segs)
+        m = analyze_structure(t)
+        # uncertain_word_pct = 0.5, low_conf_segment_pct = 0, mean_word_prob = 0.675
+        assert 0.0 < m.clarity_score < 0.5
+        assert m.uncertain_word_pct == pytest.approx(0.5)
 
 
 # ===================================================================

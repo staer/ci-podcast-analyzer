@@ -1,50 +1,50 @@
 {
   "norm_ranges": {
-    "speech_rate": [
-      79.3983,
-      178.4653
-    ],
     "vocabulary_level": [
-      0.097,
-      0.2472
+      0.087,
+      0.2877
     ],
     "lexical_diversity": [
-      0.3775,
-      0.6169
+      0.471,
+      0.6936
     ],
     "sentence_length": [
-      28.7664,
-      47.7087
+      5.4284,
+      24.0116
     ],
     "grammar_complexity": [
-      2.9779,
-      6.4431
+      3.6193,
+      6.9384
     ],
     "tense_complexity": [
-      0.1118,
-      0.4981
+      0.0512,
+      0.2526
     ],
     "slang_score": [
-      0.4334,
-      0.9755
+      0.2334,
+      0.5504
     ],
     "topic_complexity": [
-      0.3656,
-      0.8079
+      0.0849,
+      0.4431
+    ],
+    "speech_rate": [
+      60.0,
+      220.0
     ],
     "clarity": [
-      -0.3432,
-      -0.0189
+      0.005,
+      0.12
     ]
   },
   "weights": {
-    "speech_rate": 0.33637,
-    "vocabulary_level": 0.020754,
-    "lexical_diversity": 0.103816,
-    "sentence_length": 0.042035,
-    "grammar_complexity": 0.188423,
-    "tense_complexity": 0.038175,
-    "clarity": 0.070426,
+    "speech_rate": 0.404423,
+    "vocabulary_level": 0.037047,
+    "lexical_diversity": 0.036645,
+    "sentence_length": 0.164119,
+    "grammar_complexity": 0.033598,
+    "tense_complexity": 0.080659,
+    "clarity": 0.043509,
     "topic_complexity": 0.1,
     "slang_score": 0.1
   },

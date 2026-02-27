@@ -48,7 +48,7 @@ def _get_norm_ranges() -> dict[str, tuple[float, float]]:
         "tense_complexity": (0.05, 0.60),
         "slang_score": (0.0, 1.0),
         "topic_complexity": (0.0, 1.0),
-        "clarity": (-0.30, -0.05),
+        "clarity": (0.005, 0.12),
     }
     result = {}
     for key, default in defaults.items():
@@ -314,12 +314,17 @@ def score_episode(
         llm.topic_complexity, *ranges["topic_complexity"]
     )
 
-    # Clarity (inverted: worse clarity = harder)
-    # avg_log_prob is negative; more negative = harder to understand
-    clarity_raw = sm.avg_segment_confidence if sm.avg_segment_confidence != 0 else -0.5
-    clarity_norm = _normalise(clarity_raw, *ranges["clarity"])
-    # Invert: 0 (clear) → hard-to-hear = high difficulty
-    components["clarity"] = 1.0 - clarity_norm
+    # Clarity (word-level composite: higher = harder to understand)
+    # Use clarity_score when available, fall back to inverted avg_segment_confidence
+    if sm.clarity_score > 0:
+        clarity_raw = sm.clarity_score
+    elif sm.avg_segment_confidence != 0:
+        # Legacy fallback: invert so higher = worse clarity
+        # Map old range roughly: -0.05 (clear) → ~0.01, -0.30 (bad) → ~0.10
+        clarity_raw = max(0.0, -sm.avg_segment_confidence - 0.04) * 0.4
+    else:
+        clarity_raw = 0.05  # neutral default
+    components["clarity"] = _normalise(clarity_raw, *ranges["clarity"])
 
     return components
 
@@ -684,7 +689,7 @@ def format_ranking(results: list[DifficultyScore]) -> str:
         ("tense_complexity", "TNS",  "Tense complexity (verb tense difficulty)"),
         ("slang_score",       "SLG",  "Slang usage (LLM)"),
         ("topic_complexity",  "TOP",  "Topic complexity (LLM)"),
-        ("clarity",           "CLR",  "Clarity (Whisper confidence)"),
+        ("clarity",           "CLR",  "Clarity (word-level Whisper confidence)"),
     ]
 
     # Filter to active columns (non-zero weight)

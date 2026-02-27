@@ -128,6 +128,11 @@ class StructuralMetrics(BaseModel):
     punctuation_density: float = 0.0
     # Clarity proxy from Whisper confidence
     avg_segment_confidence: float = 0.0
+    # Word-level clarity metrics (higher = harder to understand)
+    clarity_score: float = 0.0        # composite: 50% low_conf_seg + 30% uncertain_words + 20% (1-mean_word_prob)
+    low_conf_segment_pct: float = 0.0  # fraction of segments with avg_log_prob < -0.5
+    uncertain_word_pct: float = 0.0    # fraction of words with probability < 0.5
+    mean_word_prob: float = 0.0        # average word-level probability (0-1)
 
 
 class LLMAnalysis(BaseModel):

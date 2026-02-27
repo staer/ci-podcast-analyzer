@@ -376,6 +376,35 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
         sum(confidences) / len(confidences) if confidences else 0.0
     )
 
+    # Word-level clarity metrics
+    _LOW_CONF_THRESH = -0.5   # segment avg_log_prob below this = low confidence
+    _UNCERTAIN_THRESH = 0.5   # word probability below this = uncertain
+    low_conf_segment_pct = (
+        sum(1 for lp in confidences if lp < _LOW_CONF_THRESH) / len(confidences)
+        if confidences else 0.0
+    )
+    all_word_probs = [
+        w.probability
+        for seg in transcript.segments
+        for w in seg.words
+        if w.probability is not None and w.probability > 0
+    ]
+    if all_word_probs:
+        mean_word_prob = sum(all_word_probs) / len(all_word_probs)
+        uncertain_word_pct = (
+            sum(1 for p in all_word_probs if p < _UNCERTAIN_THRESH)
+            / len(all_word_probs)
+        )
+    else:
+        mean_word_prob = 0.0
+        uncertain_word_pct = 0.0
+    # Composite clarity score (0 = crystal clear, 1 = very unclear)
+    clarity_score = (
+        0.5 * low_conf_segment_pct
+        + 0.3 * uncertain_word_pct
+        + 0.2 * (1.0 - mean_word_prob)
+    ) if all_word_probs else 0.0
+
     metrics = StructuralMetrics(
         words_per_minute=round(words_per_minute, 1),
         total_words=total_words,
@@ -395,6 +424,10 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
         tense_complexity=tense_complexity,
         punctuation_density=round(punctuation_density, 4),
         avg_segment_confidence=round(avg_segment_confidence, 4),
+        clarity_score=round(clarity_score, 4),
+        low_conf_segment_pct=round(low_conf_segment_pct, 4),
+        uncertain_word_pct=round(uncertain_word_pct, 4),
+        mean_word_prob=round(mean_word_prob, 4),
     )
 
     logger.info(

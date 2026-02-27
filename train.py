@@ -76,6 +76,18 @@ STRUCTURAL = [
 
 LLM_KEYS = {"slang_score", "topic_complexity"}
 
+# Components with domain-known norm ranges that should NOT be optimised.
+# These have well-understood real-world bounds:
+#   speech_rate: ~60 WPM (very slow learner content) to ~220 WPM (fast native)
+#   clarity:     ~0.005 (studio-quality) to ~0.12 (noisy/overlapping speakers)
+FIXED_RANGES: dict[str, tuple[float, float]] = {
+    "speech_rate": (60.0, 220.0),
+    "clarity": (0.005, 0.12),
+}
+
+# Components whose norm-ranges ARE part of the optimised parameter vector
+OPTIMIZED_COMPONENTS = [k for k in COMPONENTS if k not in FIXED_RANGES]
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -126,11 +138,13 @@ def build_episode_analyses(
 # ---------------------------------------------------------------------------
 # Parameter vector <-> dicts
 #
-# Layout (25 values):
-#   [0..17]  norm_ranges for all 9 components × (lo, hi)
-#   [18..24] raw structural weights — each in [0, 1], normalised to
-#            sum to 1.0 during decoding.  A floor of MIN_WEIGHT is
-#            enforced per component so the optimizer can't zero anything.
+# Layout (N_OPT*2 + N_STRUCT values):
+#   [0..2*N_OPT-1]  norm_ranges for OPTIMIZED_COMPONENTS × (lo, hi)
+#                    Components in FIXED_RANGES are excluded — their
+#                    ranges are injected from domain constants.
+#   [2*N_OPT .. ]    raw structural weights — each in [0, 1], normalised
+#                    to sum to 1.0 during decoding.  A floor of MIN_WEIGHT
+#                    is enforced per component.
 #
 # LLM weights (slang_score, topic_complexity) are NOT optimised.
 # They are read from settings.json and passed through unchanged.
@@ -148,7 +162,8 @@ def params_to_dicts(
 ) -> tuple[dict[str, tuple[float, float]], dict[str, float]]:
     """Decode a flat parameter vector into (norm_ranges, weights)."""
     norm_ranges: dict[str, tuple[float, float]] = {}
-    for i, key in enumerate(COMPONENTS):
+    n_opt = len(OPTIMIZED_COMPONENTS)
+    for i, key in enumerate(OPTIMIZED_COMPONENTS):
         lo = x[2 * i]
         hi = x[2 * i + 1]
         if lo > hi:
@@ -156,6 +171,8 @@ def params_to_dicts(
         if hi - lo < 0.01:
             hi = lo + 0.01
         norm_ranges[key] = (float(lo), float(hi))
+    # Inject domain-fixed ranges (not optimised)
+    norm_ranges.update(FIXED_RANGES)
 
     # Determine the weight budget left for structural components
     llm_total = 0.0
@@ -165,9 +182,8 @@ def params_to_dicts(
 
     # Structural weights: raw values in [0, 1] → clamp, enforce max share,
     # then normalise to sum to structural_budget so total weights = 1.0
-    n_comp = len(COMPONENTS)
     n_struct = len(STRUCTURAL)
-    raw_w = x[2 * n_comp : 2 * n_comp + n_struct]
+    raw_w = x[2 * n_opt : 2 * n_opt + n_struct]
     clamped = np.clip(raw_w, MIN_WEIGHT, MAX_WEIGHT)
     # Normalise to structural_budget (leaves room for LLM weights)
     sw = clamped / clamped.sum() * structural_budget
@@ -203,17 +219,17 @@ def dicts_to_params(
     weights: dict[str, float],
 ) -> np.ndarray:
     """Encode current dicts into a flat parameter vector."""
-    n_comp = len(COMPONENTS)
+    n_opt = len(OPTIMIZED_COMPONENTS)
     n_struct = len(STRUCTURAL)
-    x = np.zeros(2 * n_comp + n_struct)
-    for i, key in enumerate(COMPONENTS):
+    x = np.zeros(2 * n_opt + n_struct)
+    for i, key in enumerate(OPTIMIZED_COMPONENTS):
         lo, hi = norm_ranges.get(key, (0.0, 1.0))
         x[2 * i] = lo
         x[2 * i + 1] = hi
 
     # Structural weights: store raw (un-normalised) values
     for i, key in enumerate(STRUCTURAL):
-        x[2 * n_comp + i] = np.clip(weights.get(key, 1.0 / n_struct),
+        x[2 * n_opt + i] = np.clip(weights.get(key, 1.0 / n_struct),
                              MIN_WEIGHT, MAX_WEIGHT)
     return x
 
@@ -335,7 +351,6 @@ def compute_loss(
     # a minimum relative width compared to the component_bounds span.
     MIN_RANGE_FRAC = 0.30  # range must be at least 30% of the feasible span
     component_spans = {
-        "speech_rate":       280.0,
         "vocabulary_level":  0.40,
         "lexical_diversity": 0.75,
         "sentence_length":   59.0,
@@ -343,10 +358,9 @@ def compute_loss(
         "tense_complexity":  0.60,
         "slang_score":       1.0,
         "topic_complexity":  1.0,
-        "clarity":           0.80,
     }
     NARROW_PENALTY = 12.0
-    for key in COMPONENTS:
+    for key in OPTIMIZED_COMPONENTS:
         lo, hi = norm_ranges.get(key, (0, 1))
         span = hi - lo
         min_span = component_spans.get(key, 1.0) * MIN_RANGE_FRAC
@@ -358,7 +372,6 @@ def compute_loss(
     # most podcasts clamp to 0.  The lo value should stay in the lower
     # half of the feasible range for each component.
     component_bounds_map = {
-        "speech_rate":       (20.0, 300.0),
         "vocabulary_level":  (0.0, 0.40),
         "lexical_diversity": (0.15, 0.90),
         "sentence_length":   (1.0, 60.0),
@@ -366,10 +379,9 @@ def compute_loss(
         "tense_complexity":  (0.0, 0.60),
         "slang_score":       (0.0, 1.0),
         "topic_complexity":  (0.0, 1.0),
-        "clarity":           (-0.80, 0.0),
     }
     FLOOR_PENALTY = 6.0
-    for key in COMPONENTS:
+    for key in OPTIMIZED_COMPONENTS:
         lo, hi = norm_ranges.get(key, (0, 1))
         cb_lo, cb_hi = component_bounds_map.get(key, (0, 1))
         midpoint = (cb_lo + cb_hi) / 2.0
@@ -381,20 +393,147 @@ def compute_loss(
     return float(loss)
 
 
+def compute_loss_breakdown(
+    x: np.ndarray,
+    *,
+    training_cfg: dict,
+    feed_analyses: dict[str, list],
+    llm_weights: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Return individual loss components for diagnostics.
+
+    Same logic as compute_loss but tracks each penalty separately.
+    """
+    norm_ranges, weights = params_to_dicts(x, llm_weights=llm_weights)
+
+    group_order = training_cfg["group_order"]
+    target_ranges = training_cfg["target_ranges"]
+    feeds_by_group: dict[str, list[dict]] = {}
+    for feed in training_cfg["training_feeds"]:
+        feeds_by_group.setdefault(feed["group"], []).append(feed)
+
+    scores_by_group: dict[str, list[float]] = {}
+    for group in group_order:
+        group_scores = []
+        for feed in feeds_by_group.get(group, []):
+            url = feed["url"]
+            analyses = feed_analyses.get(url, [])
+            if not analyses:
+                continue
+            result = compute_podcast_score(
+                feed["name"], url, analyses,
+                norm_ranges=norm_ranges, weights_override=weights,
+            )
+            group_scores.append(result.overall_score)
+        scores_by_group[group] = group_scores
+
+    parts: dict[str, float] = {}
+
+    # 1. Ordering violations
+    ORDER_PENALTY = 50.0
+    ordering = 0.0
+    for i in range(len(group_order)):
+        for j in range(i + 1, len(group_order)):
+            for se in scores_by_group.get(group_order[i], []):
+                for sh in scores_by_group.get(group_order[j], []):
+                    if se >= sh:
+                        ordering += ORDER_PENALTY * (1.0 + se - sh)
+    parts["ordering_violations"] = ordering
+
+    # 2. Target-range deviation
+    RANGE_PENALTY = 10.0
+    range_dev = 0.0
+    for group in group_order:
+        lo_t, hi_t = target_ranges[group]
+        for s in scores_by_group.get(group, []):
+            if s < lo_t:
+                range_dev += RANGE_PENALTY * (lo_t - s) ** 2
+            elif s > hi_t:
+                range_dev += RANGE_PENALTY * (s - hi_t) ** 2
+    parts["target_range_deviation"] = range_dev
+
+    # 3. Separation bonus (negative = good)
+    SEPARATION_WEIGHT = 5.0
+    sep = 0.0
+    group_means = []
+    for group in group_order:
+        gs = scores_by_group.get(group, [])
+        group_means.append(np.mean(gs) if gs else 0.5)
+    for k in range(len(group_means) - 1):
+        gap = group_means[k + 1] - group_means[k]
+        if gap > 0:
+            sep -= SEPARATION_WEIGHT * gap
+        else:
+            sep += SEPARATION_WEIGHT * abs(gap)
+    parts["separation_bonus"] = sep
+
+    # 4. Within-group spread
+    SPREAD_PENALTY = 3.0
+    spread = 0.0
+    for group in group_order:
+        gs = scores_by_group.get(group, [])
+        if len(gs) >= 2:
+            spread += SPREAD_PENALTY * (max(gs) - min(gs)) ** 2
+    parts["within_group_spread"] = spread
+
+    # 5. Weight entropy bonus (negative = good)
+    sw_arr = np.array([weights[k] for k in STRUCTURAL])
+    entropy = -np.sum(sw_arr * np.log(sw_arr + 1e-10))
+    max_entropy = np.log(len(STRUCTURAL))
+    parts["weight_entropy_bonus"] = -1.0 * (entropy / max_entropy)
+
+    # 7. Narrow range penalty
+    MIN_RANGE_FRAC = 0.30
+    component_spans = {
+        "vocabulary_level": 0.40,
+        "lexical_diversity": 0.75, "sentence_length": 59.0,
+        "grammar_complexity": 11.0, "tense_complexity": 0.60,
+        "slang_score": 1.0, "topic_complexity": 1.0,
+    }
+    narrow = 0.0
+    for key in OPTIMIZED_COMPONENTS:
+        lo, hi = norm_ranges.get(key, (0, 1))
+        span = hi - lo
+        min_span = component_spans.get(key, 1.0) * MIN_RANGE_FRAC
+        if span < min_span:
+            narrow += 12.0 * ((min_span - span) / min_span) ** 2
+    parts["narrow_range_penalty"] = narrow
+
+    # 8. Floor-too-high penalty
+    component_bounds_map = {
+        "vocabulary_level": (0.0, 0.40),
+        "lexical_diversity": (0.15, 0.90), "sentence_length": (1.0, 60.0),
+        "grammar_complexity": (1.0, 12.0), "tense_complexity": (0.0, 0.60),
+        "slang_score": (0.0, 1.0), "topic_complexity": (0.0, 1.0),
+    }
+    floor_pen = 0.0
+    for key in OPTIMIZED_COMPONENTS:
+        lo, hi = norm_ranges.get(key, (0, 1))
+        cb_lo, cb_hi = component_bounds_map.get(key, (0, 1))
+        midpoint = (cb_lo + cb_hi) / 2.0
+        if lo > midpoint:
+            overshoot = (lo - midpoint) / (cb_hi - cb_lo)
+            floor_pen += 6.0 * overshoot ** 2
+    parts["floor_too_high_penalty"] = floor_pen
+
+    parts["total"] = sum(parts.values())
+    return parts
+
+
 # ---------------------------------------------------------------------------
 # Bounds for differential_evolution
 # ---------------------------------------------------------------------------
 
 def get_bounds(current_ranges: dict[str, tuple[float, float]]) -> list[tuple[float, float]]:
-    """Build (lo, hi) bounds for each element of the 22-element parameter vector.
+    """Build bounds for the parameter vector.
 
     Norm-range values are bounded around physically plausible values.
-    Structural weight softmax inputs are bounded ±5.
+    Components in FIXED_RANGES are excluded from the vector.
+    Structural weight softmax inputs are bounded by MIN/MAX.
     """
     bounds = []
 
     component_bounds = {
-        "speech_rate":       (20.0, 300.0),
         "vocabulary_level":  (0.0, 0.40),
         "lexical_diversity": (0.15, 0.90),
         "sentence_length":   (1.0, 60.0),
@@ -402,10 +541,9 @@ def get_bounds(current_ranges: dict[str, tuple[float, float]]) -> list[tuple[flo
         "tense_complexity":  (0.0, 0.60),
         "slang_score":       (0.0, 1.0),
         "topic_complexity":  (0.0, 1.0),
-        "clarity":           (-0.80, 0.0),
     }
 
-    for key in COMPONENTS:
+    for key in OPTIMIZED_COMPONENTS:
         lo_bound, hi_bound = component_bounds[key]
         bounds.append((lo_bound, hi_bound))  # norm_range lo
         bounds.append((lo_bound, hi_bound))  # norm_range hi
@@ -433,7 +571,8 @@ def print_params(
     for key in COMPONENTS:
         lo, hi = norm_ranges.get(key, (0, 1))
         w = weights.get(key, 0)
-        print(f"  {key:<25s}  ({lo:7.3f}, {hi:7.3f})  {w:7.4f}")
+        tag = "  FIXED" if key in FIXED_RANGES else ""
+        print(f"  {key:<25s}  ({lo:7.3f}, {hi:7.3f})  {w:7.4f}{tag}")
     print(f"  {'':25s}  {'':18s}  {sum(weights.values()):7.4f}  TOTAL")
 
 
@@ -561,7 +700,25 @@ def main():
     # --- Run optimisation ---
     print(f"\n[*] Starting optimisation (maxiter={args.iterations}, "
           f"popsize={args.popsize}, seed={args.seed})...")
-    print("    This may take a few minutes...\n")
+
+    print("""
+    METRICS GUIDE
+    ─────────────
+    loss        A single number the optimizer tries to MINIMIZE (more negative
+                = better).  It combines: ordering penalties (easier podcasts
+                must score below harder ones), target-range fit (each group's
+                score should land in its target band), group separation
+                (reward gaps between tiers), weight-balance incentives, and
+                norm-range health checks.  Typical good values are –2 to –4.
+
+    convergence Fraction (0→1) indicating how similar all candidate solutions
+                in the population have become.  Starts near 0 (diverse
+                population) and approaches 1 as the population converges to
+                a single optimum.  It stays at 0.00 for a long time because
+                differential_evolution maintains a large diverse population
+                (popsize×dimensions candidates).  This is normal — progress
+                is tracked via 'loss' improvements instead.
+    """)
 
     bounds = get_bounds(current_ranges)
 
@@ -608,6 +765,30 @@ def main():
     print(f"\n[*] Optimisation complete.")
     print(f"    Iterations: {result.nit}")
     print(f"    Final loss: {result.fun:.4f}  (was {current_loss:.4f})")
+
+    # Loss breakdown
+    breakdown = compute_loss_breakdown(
+        result.x, training_cfg=training_cfg,
+        feed_analyses=feed_analyses, llm_weights=llm_weights,
+    )
+    print("""
+  LOSS BREAKDOWN  (positive = penalties, negative = bonuses)
+  ─────────────────────────────────────────────────────────""")
+    labels = {
+        "ordering_violations":   "Ordering violations    (easier must score < harder)",
+        "target_range_deviation":"Target-range deviation  (scores within group bands)",
+        "separation_bonus":      "Separation bonus        (reward gaps between groups)",
+        "within_group_spread":   "Within-group spread     (same-group consistency)",
+        "weight_entropy_bonus":  "Weight entropy bonus    (prefer balanced weights)",
+        "narrow_range_penalty":  "Narrow-range penalty    (prevent collapsed ranges)",
+        "floor_too_high_penalty":"Floor-too-high penalty  (keep lo below midpoint)",
+    }
+    for key, label in labels.items():
+        val = breakdown.get(key, 0.0)
+        sign = "+" if val >= 0 else ""
+        print(f"    {label}  {sign}{val:>8.4f}")
+    print(f"    {'':─<55s}  ────────")
+    print(f"    {'TOTAL':<55s}  {breakdown['total']:>8.4f}")
 
     print_params("OPTIMISED PARAMETERS", best_ranges, best_weights)
 

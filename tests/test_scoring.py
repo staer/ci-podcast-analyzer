@@ -34,7 +34,7 @@ _TEST_RANGES = {
     "tense_complexity": (0.05, 0.60),
     "slang_score": (0.0, 1.0),
     "topic_complexity": (0.0, 1.0),
-    "clarity": (-0.30, -0.05),
+    "clarity": (0.005, 0.12),
 }
 _TEST_WEIGHTS = {
     "speech_rate": 0.30,
@@ -141,6 +141,7 @@ def _make_episode_analysis(
     avg_sentence_length: float = 12.0,
     avg_parse_depth: float = 4.0,
     avg_segment_confidence: float = -0.5,
+    clarity_score: float = 0.0,
     tense_complexity: float = 0.15,
     slang_score: float = 0.0,
     topic_complexity: float = 0.0,
@@ -168,6 +169,7 @@ def _make_episode_analysis(
         vocab_score=vocab_score,
         tense_complexity=tense_complexity,
         avg_segment_confidence=avg_segment_confidence,
+        clarity_score=clarity_score,
         punctuation_density=punctuation_density,
     )
     llm = LLMAnalysis(
@@ -232,23 +234,31 @@ class TestScoreEpisode:
         expected = (0.15 - lo) / (hi - lo) if hi > lo else 0.0
         assert comps["vocabulary_level"] == pytest.approx(max(0, min(1, expected)), abs=0.02)
 
-    def test_clarity_inversion(self):
-        """Worse clarity (more negative) should yield a HIGHER difficulty."""
-        ea_clear = _make_episode_analysis(avg_segment_confidence=-0.1)
-        ea_muddy = _make_episode_analysis(avg_segment_confidence=-1.2)
+    def test_clarity_higher_is_harder(self):
+        """Higher clarity_score (worse audio quality) → higher difficulty."""
+        ea_clear = _make_episode_analysis(clarity_score=0.01)
+        ea_muddy = _make_episode_analysis(clarity_score=0.09)
         comps_clear = score_episode(ea_clear, norm_ranges=_TEST_RANGES)
         comps_muddy = score_episode(ea_muddy, norm_ranges=_TEST_RANGES)
         assert comps_muddy["clarity"] > comps_clear["clarity"]
 
     def test_clarity_best_case(self):
-        """Best clarity (-0.05) → clarity difficulty ≈ 0."""
-        ea = _make_episode_analysis(avg_segment_confidence=-0.05)
+        """Best clarity (0.005) → clarity difficulty ≈ 0."""
+        ea = _make_episode_analysis(clarity_score=0.005)
         assert score_episode(ea, norm_ranges=_TEST_RANGES)["clarity"] == pytest.approx(0.0, abs=0.01)
 
     def test_clarity_worst_case(self):
-        """Worst clarity (-0.30) → clarity difficulty ≈ 1."""
-        ea = _make_episode_analysis(avg_segment_confidence=-0.30)
+        """Worst clarity (0.12) → clarity difficulty ≈ 1."""
+        ea = _make_episode_analysis(clarity_score=0.12)
         assert score_episode(ea, norm_ranges=_TEST_RANGES)["clarity"] == pytest.approx(1.0, abs=0.01)
+
+    def test_clarity_fallback_to_avg_segment_confidence(self):
+        """When clarity_score=0 (old cache), scoring falls back to avg_segment_confidence."""
+        ea = _make_episode_analysis(clarity_score=0.0, avg_segment_confidence=-0.30)
+        comps = score_episode(ea, norm_ranges=_TEST_RANGES)
+        # Fallback: max(0, -(-0.30) - 0.04) * 0.4 = max(0, 0.26) * 0.4 = 0.104
+        # normalise(0.104, 0.005, 0.12) ≈ 0.86
+        assert comps["clarity"] > 0.5  # should map to high difficulty
 
     def test_tense_complexity_normalisation(self):
         """Tense complexity should normalise between the configured range."""
@@ -270,7 +280,7 @@ class TestScoreEpisode:
         ea = EpisodeAnalysis(episode=ep)
         comps = score_episode(ea)
         # With all-zero metrics most components should be at or near 0
-        # (except clarity which inverts a default of -0.5)
+        # clarity defaults to 0.05 neutral when no data available
         assert comps["speech_rate"] == pytest.approx(0.0)
         assert comps["vocabulary_level"] == pytest.approx(0.0)
 

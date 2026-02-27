@@ -23,6 +23,7 @@ WHISPER_COMPUTE_TYPE = "int8"   # int8 (fastest on CPU), float16 (GPU), auto
 WHISPER_CPU_THREADS = 0         # 0 = auto-detect, or set specific core count
 MAX_TRANSCRIBE_MINUTES = 20    # Only transcribe first N minutes per episode (0 = full)
 SKIP_INTRO_SECONDS = 45         # Skip this many seconds at the start (ads/intros)
+FIRST_HALF_ONLY = False         # Only transcribe the first half of each episode
 
 # --- Feed settings ---
 MAX_EPISODES_PER_FEED = 20      # Hard cap on episodes to consider from the feed

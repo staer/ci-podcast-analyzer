@@ -92,34 +92,47 @@ def setup_logging(verbose: bool = False) -> None:
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 
-def _load_feeds_file(path: str) -> tuple[list[str], dict]:
-    """Load feed URLs and settings from a JSON file.
+def _load_feeds_file(path: str) -> tuple[list[dict], dict]:
+    """Load feed entries and settings from a JSON file.
 
     Expected format:
     {
       "settings": { ... },
       "feeds": [
-        { "name": "...", "url": "..." },
+        { "name": "...", "url": "...", "first_half_only": true },
         ...
       ]
     }
 
     Returns:
-        Tuple of (feed_urls, settings_dict).
+        Tuple of (feed_entries, settings_dict).
+        Each feed entry is a dict with at least "url" and optionally
+        per-feed overrides like "first_half_only".
     """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     settings = data.get("settings", {})
     feeds = data.get("feeds", [])
-    urls = [entry["url"] for entry in feeds if "url" in entry]
+    entries = [entry for entry in feeds if "url" in entry]
 
-    if not urls:
+    if not entries:
         raise ValueError(f"No feeds found in {path}")
 
-    feed_names = [entry.get("name", entry["url"]) for entry in feeds if "url" in entry]
-    logging.info("Loaded %d feeds from %s: %s", len(urls), path, ", ".join(feed_names))
-    return urls, settings
+    # Deduplicate by URL, keeping the first occurrence
+    seen_urls: set[str] = set()
+    unique_entries: list[dict] = []
+    for entry in entries:
+        url = entry["url"]
+        if url in seen_urls:
+            logging.warning("Duplicate feed URL skipped: %s (%s)", url, entry.get("name", "?"))
+            continue
+        seen_urls.add(url)
+        unique_entries.append(entry)
+
+    feed_names = [e.get("name", e["url"]) for e in unique_entries]
+    logging.info("Loaded %d feeds from %s: %s", len(unique_entries), path, ", ".join(feed_names))
+    return unique_entries, settings
 
 
 def rescore_from_cache() -> list[DifficultyScore]:
@@ -251,7 +264,8 @@ def reanalyze_from_cache() -> list[DifficultyScore]:
     return results
 
 
-def analyze_feed(feed_url: str, *, use_llm: bool = True, use_cache: bool = True) -> DifficultyScore:
+def analyze_feed(feed_url: str, *, use_llm: bool = True, use_cache: bool = True,
+                  first_half_only: bool = False) -> DifficultyScore:
     """Full pipeline: parse → download → transcribe → analyze → score."""
 
     # 1. Parse the RSS feed
@@ -281,7 +295,7 @@ def analyze_feed(feed_url: str, *, use_llm: bool = True, use_cache: bool = True)
 
         if transcript is None:
             try:
-                transcript = transcribe_episode(ep)
+                transcript = transcribe_episode(ep, first_half_only=first_half_only)
                 save_transcript(transcript)
                 if use_cache:
                     save_cached_transcription(ep.url, transcript)
@@ -487,9 +501,9 @@ def main() -> None:
         return
 
     # Load feeds from JSON file if provided
-    feed_urls: list[str] = list(args.feeds)
+    feed_entries: list[dict] = [{"url": u} for u in args.feeds]
     if args.feeds_file:
-        feed_urls, file_settings = _load_feeds_file(args.feeds_file)
+        feed_entries, file_settings = _load_feeds_file(args.feeds_file)
         # JSON file settings are defaults; CLI flags override them
         if not args.episodes and "max_episodes" in file_settings:
             config.MAX_EPISODES_PER_FEED = file_settings["max_episodes"]
@@ -513,7 +527,7 @@ def main() -> None:
             config.USE_LOCAL_LLM = True
             config.OLLAMA_MODEL = file_settings["ollama_model"]
 
-    if not feed_urls and not args.rescore and not args.reanalyze:
+    if not feed_entries and not args.rescore and not args.reanalyze:
         parser.error("Provide feed URLs as arguments or via --feeds-file.")
 
     # Apply CLI overrides to config (CLI wins over file)
@@ -536,9 +550,29 @@ def main() -> None:
 
     # Run analysis for each feed
     results: list[DifficultyScore] = []
-    for feed_url in feed_urls:
+    seen_titles: set[str] = set()
+    for entry in feed_entries:
+        feed_url = entry["url"]
+        first_half = entry.get("first_half_only", False)
+        # Set per-feed config so the cache key reflects first_half_only
+        config.FIRST_HALF_ONLY = first_half
         print(f"\n[*] Analyzing: {feed_url}\n")
-        score = analyze_feed(feed_url, use_llm=args.use_llm, use_cache=not args.no_cache)
+        score = analyze_feed(
+            feed_url,
+            use_llm=args.use_llm,
+            use_cache=not args.no_cache,
+            first_half_only=first_half,
+        )
+
+        # Deduplicate by podcast title (different URLs → same RSS feed)
+        if score.podcast_title in seen_titles:
+            logging.warning(
+                "Skipping duplicate podcast '%s' (feed %s resolves to same content)",
+                score.podcast_title, feed_url,
+            )
+            continue
+        seen_titles.add(score.podcast_title)
+
         results.append(score)
         print(format_report(score))
 

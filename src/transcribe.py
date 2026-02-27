@@ -135,7 +135,17 @@ def _get_model() -> WhisperModel:
     return _model
 
 
-def transcribe_episode(episode: Episode) -> Transcription:
+def _get_audio_duration_minutes(path: str) -> float:
+    """Return total audio duration in minutes using PyAV metadata."""
+    import av
+    container = av.open(path)
+    # container.duration is in AV_TIME_BASE (microseconds)
+    duration_sec = (container.duration or 0) / 1_000_000
+    container.close()
+    return duration_sec / 60.0
+
+
+def transcribe_episode(episode: Episode, *, first_half_only: bool = False) -> Transcription:
     """Transcribe an episode's audio file.
 
     Args:
@@ -160,6 +170,19 @@ def transcribe_episode(episode: Episode) -> Transcription:
     # For long episodes, decode only the first MAX_TRANSCRIBE_MINUTES of
     # audio so we don't waste time/memory on hours of content.
     max_min = config.MAX_TRANSCRIBE_MINUTES
+
+    if first_half_only:
+        total_min = _get_audio_duration_minutes(str(audio))
+        half_min = total_min / 2.0
+        if max_min > 0:
+            max_min = min(max_min, half_min)
+        else:
+            max_min = half_min
+        logger.info(
+            "first_half_only: episode is %.1f min, limiting to %.1f min",
+            total_min, max_min,
+        )
+
     if max_min > 0:
         logger.info(
             "Loading first %d minutes of audio (trimming long episodes)...",

@@ -99,7 +99,10 @@ def _sample_episodes(candidates: list[Episode]) -> list[Episode]:
     # Within each partition, prefer longer episodes when the feed is
     # dominated by short ones.  This improves transcript quality for
     # metrics like lexical diversity that are noisy on very short texts.
-    cached = _sort_prefer_longer(cached)
+    # Cached episodes are always sorted deterministically (longest first)
+    # so re-runs don't randomly pick different episodes and trigger
+    # unnecessary downloads.
+    cached = _sort_prefer_longer(cached, deterministic=True)
     fresh = _sort_prefer_longer(fresh)
     ordered = cached + fresh
 
@@ -139,33 +142,44 @@ def _sample_episodes(candidates: list[Episode]) -> list[Episode]:
     return selected
 
 
-def _sort_prefer_longer(episodes: list[Episode]) -> list[Episode]:
+def _sort_prefer_longer(episodes: list[Episode], *, deterministic: bool = False) -> list[Episode]:
     """Sort episodes so longer ones come first when most are short.
 
     When the median duration is below PREFER_LONGER_THRESHOLD, sort
     descending by duration so the sampler picks longer (more analytically
-    reliable) episodes first.  Otherwise, shuffle randomly as before.
+    reliable) episodes first.  Otherwise, shuffle randomly — unless
+    *deterministic* is True, in which case sort by duration descending
+    so re-runs select the same episodes (used for cached partitions).
 
     Episodes without duration metadata are placed at the end.
     """
     threshold = getattr(config, "PREFER_LONGER_THRESHOLD", 0)
     if not threshold or not episodes:
+        if deterministic:
+            return sorted(
+                episodes,
+                key=lambda ep: ep.duration_seconds if ep.duration_seconds else 0.0,
+                reverse=True,
+            )
         random.shuffle(episodes)
         return episodes
 
     durations = [ep.duration_seconds for ep in episodes if ep.duration_seconds]
     if not durations:
+        if deterministic:
+            return list(episodes)
         random.shuffle(episodes)
         return episodes
 
     median_dur = sorted(durations)[len(durations) // 2]
 
-    if median_dur < threshold:
+    if median_dur < threshold or deterministic:
         # Prefer longer episodes — sort descending, with None-duration at end
-        logger.info(
-            "Median episode duration %.0fs < %ds threshold — preferring longer episodes",
-            median_dur, threshold,
-        )
+        if median_dur < threshold:
+            logger.info(
+                "Median episode duration %.0fs < %ds threshold — preferring longer episodes",
+                median_dur, threshold,
+            )
         return sorted(
             episodes,
             key=lambda ep: ep.duration_seconds if ep.duration_seconds else 0.0,

@@ -662,10 +662,6 @@ def format_ranking(results: list[DifficultyScore]) -> str:
             for chunk in chunks[1:]:
                 lines.append(f"{'':<{indent}s}{chunk}")
 
-        if r.trimmed_episodes:
-            trimmed_line = f"{'':<{indent}s}-> trimmed: {', '.join(r.trimmed_episodes)}"
-            lines.extend(_wrap(trimmed_line, indent=indent + 3))
-
     lines.append(sep)
 
     # Weight key

@@ -40,6 +40,7 @@ def current_whisper_params() -> WhisperParams:
         language=config.WHISPER_LANGUAGE,
         skip_intro_seconds=config.SKIP_INTRO_SECONDS,
         max_transcribe_minutes=config.MAX_TRANSCRIBE_MINUTES,
+        first_half_only=config.FIRST_HALF_ONLY,
     )
 
 

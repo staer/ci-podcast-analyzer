@@ -12,7 +12,8 @@
   "feeds": [
     {
       "name": "Cuentame",
-      "url": "https://anchor.fm/s/4baec630/podcast/rss"
+      "url": "https://anchor.fm/s/4baec630/podcast/rss",
+      "first_half_only": true
     },
     {
       "name": "Chill Spanish",
@@ -49,6 +50,19 @@
     {
       "name": "The Wild Project",
       "url": "https://feeds.megaphone.fm/TWIP9771253765"
+    },
+    {
+      "name": "Mextalki",
+      "url": "https://anchor.fm/s/3d813124/podcast/rss"
+    },
+
+    {
+      "name": "How to Spanish",
+      "url": "https://anchor.fm/s/10594f934/podcast/rss"
+    },
+    {
+      "name": "Adrea la Mexicana",
+      "url": "https://anchor.fm/s/fc941b1c/podcast/rss"
     }
   ]
 }

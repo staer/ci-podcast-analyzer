@@ -63,6 +63,7 @@ class WhisperParams(BaseModel):
     language: str = "es"
     skip_intro_seconds: int = 45
     max_transcribe_minutes: int = 10
+    first_half_only: bool = False
 
 
 class CachedTranscription(BaseModel):

@@ -22,32 +22,42 @@ logger = logging.getLogger(__name__)
 # Each tuple is (min_value, max_value).  Values outside the range are clamped.
 # ---------------------------------------------------------------------------
 NORM_RANGES: dict[str, tuple[float, float]] = {
-    # 40 wpm = extremely slow / beginner, 220 wpm = rapid native speech
-    "speech_rate": (40.0, 220.0),
-    # Fraction of words outside top-5k frequency list
-    "vocabulary_level": (0.0, 0.45),
+    # 40 wpm = extremely slow / beginner, 200 wpm = rapid native speech.
+    # Learner podcasts sit around 60-100 wpm; native radio/debate is
+    # 160-200+ wpm.  This is the strongest difficulty signal.
+    "speech_rate": (40.0, 200.0),
+    # Fraction of words outside top-5k frequency list.
+    # Empirical range: learner podcasts 0.04-0.10, native 0.08-0.20.
+    # Floor at 0.03 (almost no podcast is below this); ceiling at 0.20
+    # so the full 0-1 band is occupied.  Anything above 0.20 clamps to 1.
+    "vocabulary_level": (0.03, 0.20),
     # MATTR-based lexical diversity (more stable than raw TTR across
     # different transcript lengths).
-    "lexical_diversity": (0.15, 0.55),
+    "lexical_diversity": (0.20, 0.50),
     # Average words per sentence (wider: Whisper punctuation is imperfect)
     "sentence_length": (2.0, 30.0),
-    # Average parse-tree depth (wider: spoken Spanish parse trees are deep)
-    "grammar_complexity": (1.0, 10.0),
+    # Average parse-tree depth.  Empirical range: learner 3.5-4.5,
+    # native 4.5-6.5.  Outlier run-on text (depth 7-39) is already
+    # handled by the sentence-confidence blender, so the norm range
+    # only needs to cover plausible punctuated text.
+    "grammar_complexity": (3.0, 7.0),
     # LLM slang score (already 0-1)
     "slang_score": (0.0, 1.0),
     # LLM topic complexity (already 0-1)
     "topic_complexity": (0.0, 1.0),
     # Whisper avg_log_prob: more negative = less clear.
     # We invert this so that *lower* clarity → higher difficulty.
-    "clarity": (-1.2, -0.1),
+    # Empirical range across podcasts is roughly -0.30 to -0.04;
+    # the previous range (-1.0, -0.05) wasted normalisation space.
+    "clarity": (-0.30, -0.05),
 }
 
 CEFR_THRESHOLDS = [
-    (0.15, "A1"),
-    (0.30, "A2"),
+    (0.20, "A1"),
+    (0.35, "A2"),
     (0.50, "B1"),
-    (0.70, "B2"),
-    (0.85, "C1"),
+    (0.65, "B2"),
+    (0.80, "C1"),
     (1.01, "C2"),
 ]
 
@@ -64,6 +74,10 @@ def score_episode(episode_analysis: EpisodeAnalysis) -> dict[str, float]:
 
     Returns:
         dict mapping component name → normalised 0-1 score.
+        Also includes the special key ``_sentence_confidence`` (0-1)
+        which indicates how reliable the sentence-length score is based
+        on punctuation density.  A value near 1 means punctuation was
+        plentiful; near 0 means Whisper likely produced run-on text.
     """
     sm = episode_analysis.structural_metrics or StructuralMetrics()
     llm = episode_analysis.llm_analysis or LLMAnalysis()
@@ -96,6 +110,31 @@ def score_episode(episode_analysis: EpisodeAnalysis) -> dict[str, float]:
         sm.lexical_diversity, *NORM_RANGES["lexical_diversity"]
     )
 
+    # --- Short-transcript lexical diversity dampener ---
+    # MATTR is less reliable on very short texts (total_words close to
+    # the MATTR window size), producing inflated diversity values.
+    # Blend toward a neutral midpoint when the transcript is short.
+    _LEXDIV_RELIABLE_WORDS = 1000  # ~5× MATTR window → stable estimate
+    _LEXDIV_MIN_WORDS = 200        # MATTR window size (minimum for any value)
+    _NEUTRAL = 0.5
+    if sm.total_words < _LEXDIV_RELIABLE_WORDS:
+        lexdiv_confidence = max(0.0, min(1.0,
+            (sm.total_words - _LEXDIV_MIN_WORDS)
+            / (_LEXDIV_RELIABLE_WORDS - _LEXDIV_MIN_WORDS)
+        ))
+        original_lex = components["lexical_diversity"]
+        components["lexical_diversity"] = round(
+            lexdiv_confidence * original_lex
+            + (1.0 - lexdiv_confidence) * _NEUTRAL,
+            4,
+        )
+        logger.debug(
+            "Short-text LEX dampener: words=%d, confidence=%.2f, "
+            "LEX %.3f → %.3f",
+            sm.total_words, lexdiv_confidence, original_lex,
+            components["lexical_diversity"],
+        )
+
     # Sentence length
     components["sentence_length"] = _normalise(
         sm.avg_sentence_length, *NORM_RANGES["sentence_length"]
@@ -105,6 +144,71 @@ def score_episode(episode_analysis: EpisodeAnalysis) -> dict[str, float]:
     components["grammar_complexity"] = _normalise(
         sm.avg_parse_depth, *NORM_RANGES["grammar_complexity"]
     )
+
+    # --- Run-on sentence detection ---
+    # When Whisper omits punctuation the transcript becomes one giant
+    # "sentence", inflating both avg_sentence_length AND avg_parse_depth
+    # (spaCy's tree depth explodes without sentence breaks).  We compute
+    # a confidence factor (0-1) indicating whether sentence boundaries
+    # are trustworthy, using two complementary signals:
+    #
+    #   1. punctuation_density (sentence-ending-punct / total-words).
+    #      Well-punctuated speech has density >= 0.03.
+    #   2. avg_sentence_length itself — when density is unavailable
+    #      (old cached data defaults to 0.0) we use the sentence length
+    #      as a fallback: lengths <= 30 are plausible, >= 80 are clearly
+    #      run-on text.
+    #
+    # The confidence factor is used by compute_podcast_score to dampen
+    # the weights of both sentence_length and grammar_complexity.
+    _PUNCT_DENSITY_OK = 0.03   # density at or above this → full confidence
+    _PUNCT_DENSITY_MIN = 0.005 # density at or below this → check fallback
+    _SENT_LEN_OK = 30.0        # avg words/sentence considered plausible
+    _SENT_LEN_RUNON = 80.0     # avg words/sentence clearly run-on
+
+    if sm.punctuation_density >= _PUNCT_DENSITY_OK:
+        sentence_confidence = 1.0
+    elif sm.punctuation_density > _PUNCT_DENSITY_MIN:
+        # Some punctuation, but sparse — interpolate
+        sentence_confidence = (
+            (sm.punctuation_density - _PUNCT_DENSITY_MIN)
+            / (_PUNCT_DENSITY_OK - _PUNCT_DENSITY_MIN)
+        )
+    else:
+        # punctuation_density <= 0.005 — either truly unpunctuated or
+        # old cached data that never computed the field (defaults to 0).
+        # Fall back to avg_sentence_length as a secondary heuristic.
+        if sm.avg_sentence_length <= _SENT_LEN_OK:
+            sentence_confidence = 1.0
+        elif sm.avg_sentence_length >= _SENT_LEN_RUNON:
+            sentence_confidence = 0.0
+        else:
+            sentence_confidence = 1.0 - (
+                (sm.avg_sentence_length - _SENT_LEN_OK)
+                / (_SENT_LEN_RUNON - _SENT_LEN_OK)
+            )
+
+    components["_sentence_confidence"] = round(sentence_confidence, 4)
+
+    # When confidence is low, blend sentence_length and grammar_complexity
+    # toward a neutral midpoint (0.5).  This prevents inflated run-on
+    # values from polluting the podcast-level average.  At confidence=0
+    # the component becomes exactly 0.5 ("unknown"); at confidence=1 the
+    # original value is kept.
+    if sentence_confidence < 1.0:
+        for key in ("sentence_length", "grammar_complexity"):
+            original = components[key]
+            components[key] = round(
+                sentence_confidence * original + (1.0 - sentence_confidence) * _NEUTRAL,
+                4,
+            )
+        logger.info(
+            "Run-on detected (punct_density=%.4f, avg_sent_len=%.1f) "
+            "– sentence boundary confidence reduced to %.2f",
+            sm.punctuation_density,
+            sm.avg_sentence_length,
+            sentence_confidence,
+        )
 
     # Slang (from LLM)
     components["slang_score"] = _normalise(
@@ -146,12 +250,50 @@ def compute_podcast_score(
             feed_url=feed_url,
         )
 
+    # --- Deduplicate episodes ---
+    # The same episode URL can appear more than once when the feed has
+    # different entries that resolve to the same audio file, or when
+    # the same episode was downloaded at different lengths.  Keeping
+    # duplicates would bias the average.  We keep the *longest*
+    # transcript per URL so the most reliable metrics win.
+    seen_urls: dict[str, int] = {}  # url → index of best candidate
+    for i, ea in enumerate(episode_analyses):
+        url = ea.episode.url
+        total_words = (
+            ea.structural_metrics.total_words
+            if ea.structural_metrics
+            else 0
+        )
+        if url not in seen_urls:
+            seen_urls[url] = i
+        else:
+            prev = episode_analyses[seen_urls[url]]
+            prev_words = (
+                prev.structural_metrics.total_words
+                if prev.structural_metrics
+                else 0
+            )
+            if total_words > prev_words:
+                seen_urls[url] = i
+
+    dedup_indices = set(seen_urls.values())
+    if len(dedup_indices) < len(episode_analyses):
+        dropped = len(episode_analyses) - len(dedup_indices)
+        logger.info(
+            "Deduplicated %d duplicate episode(s) for '%s' (%d → %d)",
+            dropped, podcast_title,
+            len(episode_analyses), len(dedup_indices),
+        )
+    unique_analyses = [
+        ea for i, ea in enumerate(episode_analyses) if i in dedup_indices
+    ]
+
     weights = dict(config.SCORING_WEIGHTS)
 
     # If no episodes have LLM analysis, redistribute LLM weights
     # proportionally across the structural components so the score
     # still uses the full 0-1 range.
-    has_llm = any(ea.llm_analysis is not None for ea in episode_analyses)
+    has_llm = any(ea.llm_analysis is not None for ea in unique_analyses)
     llm_keys = {"slang_score", "topic_complexity"}
     if not has_llm:
         llm_weight = sum(weights[k] for k in llm_keys)
@@ -169,26 +311,53 @@ def compute_podcast_score(
 
     # Score each episode
     all_components: list[dict[str, float]] = []
-    for ea in episode_analyses:
+    for ea in unique_analyses:
         comps = score_episode(ea)
         all_components.append(comps)
+
+    # --- Exclude severe run-on episodes ---
+    # Episodes with _sentence_confidence == 0 (Whisper produced no
+    # punctuation at all) have completely unreliable sentence length
+    # and grammar metrics.  Their speech-rate and vocabulary are still
+    # valid, but the mixed-reliability components pollute the average.
+    # When we have enough clean episodes, drop the fully-unpunctuated
+    # ones entirely rather than blending their values to 0.5.
+    _MIN_CLEAN_EPISODES = 3
+    excluded_runon_indices: set[int] = set()
+    clean_count = sum(
+        1 for c in all_components if c.get("_sentence_confidence", 1.0) > 0
+    )
+    if clean_count >= _MIN_CLEAN_EPISODES:
+        for i, comps in enumerate(all_components):
+            if comps.get("_sentence_confidence", 1.0) == 0.0:
+                excluded_runon_indices.add(i)
+                logger.info(
+                    "Excluded run-on episode: '%s' (sentence_confidence=0)",
+                    unique_analyses[i].episode.title,
+                )
+    scoring_components = [
+        c for i, c in enumerate(all_components) if i not in excluded_runon_indices
+    ]
+    scoring_analyses = [
+        ea for i, ea in enumerate(unique_analyses) if i not in excluded_runon_indices
+    ]
 
     # Outlier trimming: drop the N highest-scoring episodes to prevent
     # a single atypical episode from skewing the podcast average.
     trimmed_indices: list[int] = []
     trim_count = getattr(config, "OUTLIER_TRIM_COUNT", 1)
     trim_min = getattr(config, "OUTLIER_TRIM_MIN_EPISODES", 4)
-    if trim_count > 0 and len(all_components) >= trim_min:
+    if trim_count > 0 and len(scoring_components) >= trim_min:
         # Compute a quick weighted score per episode for ranking
         episode_scores = []
-        for i, comps in enumerate(all_components):
+        for i, comps in enumerate(scoring_components):
             s = sum(comps.get(k, 0.0) * weights[k] for k in weights)
             episode_scores.append((s, i))
         episode_scores.sort(reverse=True)
         # Trim the top N outliers
         for _, idx in episode_scores[:trim_count]:
             trimmed_indices.append(idx)
-            title = episode_analyses[idx].episode.title
+            title = scoring_analyses[idx].episode.title
             logger.info(
                 "Trimmed outlier episode: '%s' (score=%.3f)",
                 title, episode_scores[0][0],
@@ -196,10 +365,10 @@ def compute_podcast_score(
 
     # Build the kept list
     kept_components = [
-        c for i, c in enumerate(all_components) if i not in trimmed_indices
+        c for i, c in enumerate(scoring_components) if i not in trimmed_indices
     ]
     kept_analyses = [
-        ea for i, ea in enumerate(episode_analyses) if i not in trimmed_indices
+        ea for i, ea in enumerate(scoring_analyses) if i not in trimmed_indices
     ]
 
     # Average each component across kept episodes
@@ -210,6 +379,40 @@ def compute_podcast_score(
         vals = [c.get(key, 0.0) for c in kept_components]
         avg_components[key] = round(float(np.mean(vals)), 4)
 
+    # --- Sentence-boundary dampening ---
+    # When punctuation is unreliable (low _sentence_confidence), reduce
+    # the effective weight of sentence_length AND grammar_complexity
+    # (parse-tree depth is also distorted by run-on text) and
+    # redistribute to the remaining components.
+    sent_confs = [c.get("_sentence_confidence", 1.0) for c in kept_components]
+    avg_sent_conf = float(np.mean(sent_confs)) if sent_confs else 1.0
+    dampened_keys = ["sentence_length", "grammar_complexity"]
+    if avg_sent_conf < 1.0:
+        total_freed = 0.0
+        for dk in dampened_keys:
+            orig_w = weights.get(dk, 0)
+            if orig_w <= 0:
+                continue
+            new_w = orig_w * avg_sent_conf
+            total_freed += orig_w - new_w
+            weights[dk] = new_w
+
+        # Redistribute freed weight proportionally to other active components
+        other_keys = [
+            k for k in weights
+            if k not in dampened_keys and weights[k] > 0
+        ]
+        other_total = sum(weights[k] for k in other_keys)
+        if other_total > 0 and total_freed > 0:
+            for k in other_keys:
+                weights[k] += total_freed * (weights[k] / other_total)
+
+        logger.info(
+            "Sentence-boundary weights dampened (confidence %.2f): %s",
+            avg_sent_conf,
+            {k: round(weights[k], 4) for k in dampened_keys},
+        )
+
     # Weighted sum
     overall = sum(avg_components.get(k, 0.0) * weights[k] for k in weights)
     overall = round(float(np.clip(overall, 0.0, 1.0)), 4)
@@ -218,13 +421,16 @@ def compute_podcast_score(
     # Also incorporate LLM CEFR estimates if available
     llm_cefrs = [
         ea.llm_analysis.estimated_cefr
-        for ea in episode_analyses
+        for ea in unique_analyses
         if ea.llm_analysis and ea.llm_analysis.estimated_cefr
     ]
     if llm_cefrs:
         logger.info("LLM CEFR estimates: %s → algorithmic CEFR: %s", llm_cefrs, cefr)
 
-    trimmed_titles = [episode_analyses[i].episode.title for i in trimmed_indices]
+    trimmed_titles = [scoring_analyses[i].episode.title for i in trimmed_indices]
+    excluded_titles = [
+        unique_analyses[i].episode.title for i in sorted(excluded_runon_indices)
+    ]
 
     result = DifficultyScore(
         podcast_title=podcast_title,
@@ -233,13 +439,21 @@ def compute_podcast_score(
         cefr_estimate=cefr,
         component_scores=avg_components,
         episodes_analyzed=len(kept_analyses),
-        episode_results=episode_analyses,  # keep all for the report
-        trimmed_episodes=trimmed_titles,
+        episode_results=episode_analyses,  # keep all (incl. dupes) for the report
+        trimmed_episodes=trimmed_titles + excluded_titles,
     )
 
     trimmed_msg = ""
+    info_parts = []
     if trimmed_titles:
-        trimmed_msg = f" (trimmed {len(trimmed_titles)} outlier: {', '.join(trimmed_titles)})"
+        info_parts.append(f"trimmed {len(trimmed_titles)} outlier")
+    if excluded_titles:
+        info_parts.append(f"excluded {len(excluded_titles)} run-on")
+    dup_dropped = len(episode_analyses) - len(unique_analyses)
+    if dup_dropped > 0:
+        info_parts.append(f"deduped {dup_dropped}")
+    if info_parts:
+        trimmed_msg = f" ({'; '.join(info_parts)})"
     logger.info(
         "Podcast '%s' → score=%.3f (%s), %d episodes%s",
         podcast_title,

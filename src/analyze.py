@@ -96,6 +96,15 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
         sum(sent_lengths) / len(sent_lengths) if sent_lengths else 0.0
     )
 
+    # Punctuation density: ratio of sentence-ending punctuation marks
+    # (. ? ! … ;) to total words.  A well-punctuated transcript has
+    # roughly one terminator per 8-20 words (~0.05-0.12).  When Whisper
+    # omits punctuation the ratio drops near zero, making sentence-
+    # boundary metrics unreliable.
+    _sent_end_punct = {".", "?", "!", "…", ";", "。", "？", "！"}
+    punct_count = sum(1 for t in doc if t.text in _sent_end_punct)
+    punctuation_density = punct_count / total_words if total_words else 0.0
+
     # Average word length (characters)
     avg_word_length = (
         sum(len(w) for w in words) / total_words if total_words else 0.0
@@ -156,6 +165,7 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
         avg_parse_depth=round(avg_parse_depth, 2),
         subjunctive_ratio=round(subjunctive_ratio, 4),
         subordinate_clause_ratio=round(subordinate_clause_ratio, 4),
+        punctuation_density=round(punctuation_density, 4),
         avg_segment_confidence=round(avg_segment_confidence, 4),
     )
 

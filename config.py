@@ -62,16 +62,21 @@ OLLAMA_BASE_URL = "http://localhost:11434/v1"  # Ollama's OpenAI-compatible endp
 OLLAMA_MODEL = "llama3"  # Model to use (llama3, mistral, gemma2, etc.)
 
 # --- Scoring weights (must sum to 1.0) ---
-# Speech rate and vocabulary are the strongest signals for learner podcasts.
-# Lexical diversity and sentence length are noisy on spoken transcripts
-# (TTR is length-dependent; Whisper punctuation is imperfect).
+# Speech rate is the single strongest signal: learner podcasts speak slowly
+# (60-100 wpm) while native ones are 160-200+.  Vocabulary is the next most
+# reliable discriminator (though biased upward for vocab-teaching podcasts
+# that deliberately introduce rare words).  Lexical diversity is very noisy
+# on spoken transcripts — MATTR is length-dependent and inflated on short
+# episodes; it gets a minimal weight.  Clarity (Whisper confidence) directly
+# reflects how easy the audio is to follow — clear studio recordings vs.
+# noisy conversation — and gets a meaningful weight.
 SCORING_WEIGHTS = {
-    "speech_rate": 0.20,
-    "vocabulary_level": 0.25,
-    "lexical_diversity": 0.05,
+    "speech_rate": 0.35,
+    "vocabulary_level": 0.20,
+    "lexical_diversity": 0.02,
     "sentence_length": 0.05,
-    "grammar_complexity": 0.10,
-    "slang_score": 0.15,
+    "grammar_complexity": 0.05,
+    "slang_score": 0.10,
     "topic_complexity": 0.10,
-    "clarity": 0.10,
+    "clarity": 0.13,
 }

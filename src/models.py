@@ -115,6 +115,10 @@ class StructuralMetrics(BaseModel):
     avg_parse_depth: float = 0.0
     subjunctive_ratio: float = 0.0  # ratio of subjunctive verb forms
     subordinate_clause_ratio: float = 0.0
+    # Punctuation density: ratio of sentence-ending punct to total words.
+    # Low values indicate Whisper did not reliably insert punctuation,
+    # making sentence-boundary metrics (avg_sentence_length) unreliable.
+    punctuation_density: float = 0.0
     # Clarity proxy from Whisper confidence
     avg_segment_confidence: float = 0.0
 

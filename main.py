@@ -169,6 +169,88 @@ def rescore_from_cache() -> list[DifficultyScore]:
     return results
 
 
+def reanalyze_from_cache() -> list[DifficultyScore]:
+    """Re-run structural NLP analysis from cached transcriptions, then rescore.
+
+    This recomputes all StructuralMetrics (including punctuation_density)
+    from the cached transcription text without re-downloading or re-
+    transcribing audio.  Updated metrics are written back to the analysis
+    cache so that future ``--rescore`` runs use the new values.
+
+    Returns:
+        List of DifficultyScore objects, one per unique feed_url.
+    """
+    grouped = scan_cached_analyses()
+    if not grouped:
+        logging.warning("No cached analyses found in %s", config.CACHE_DIR)
+        return []
+
+    llm_by_episode = scan_cached_llm_analyses()
+
+    total_reanalyzed = 0
+    total_skipped = 0
+    results: list[DifficultyScore] = []
+
+    for feed_url, cached_items in grouped.items():
+        podcast_title = next(
+            (c.podcast_title for c in cached_items if c.podcast_title), feed_url or "Unknown"
+        )
+
+        episode_analyses: list[EpisodeAnalysis] = []
+        for ca in cached_items:
+            from src.models import Episode
+
+            ep = Episode(
+                title=ca.episode_title or ca.episode_url,
+                url=ca.episode_url,
+            )
+            ea = EpisodeAnalysis(episode=ep)
+
+            # Try to load the cached transcription for this episode
+            transcript = load_cached_transcription(ca.episode_url, ca.whisper_params)
+            if transcript is not None:
+                try:
+                    metrics = analyze_structure(transcript)
+                    # Update the analysis cache with fresh metrics
+                    save_cached_analysis(
+                        ca.episode_url, metrics,
+                        params=ca.whisper_params,
+                        episode_title=ca.episode_title,
+                        podcast_title=ca.podcast_title,
+                        feed_url=ca.feed_url,
+                    )
+                    ea.structural_metrics = metrics
+                    total_reanalyzed += 1
+                except Exception as exc:
+                    logging.error(
+                        "Re-analysis failed for '%s': %s — keeping old metrics",
+                        ca.episode_title, exc,
+                    )
+                    ea.structural_metrics = ca.structural_metrics
+                    total_skipped += 1
+            else:
+                logging.warning(
+                    "No cached transcription for '%s' — keeping old metrics",
+                    ca.episode_title,
+                )
+                ea.structural_metrics = ca.structural_metrics
+                total_skipped += 1
+
+            if ca.episode_url in llm_by_episode:
+                ea.llm_analysis = llm_by_episode[ca.episode_url].llm_analysis
+
+            episode_analyses.append(ea)
+
+        score = compute_podcast_score(podcast_title, feed_url, episode_analyses)
+        results.append(score)
+
+    logging.info(
+        "Re-analysis complete: %d episodes reanalyzed, %d kept old metrics",
+        total_reanalyzed, total_skipped,
+    )
+    return results
+
+
 def analyze_feed(feed_url: str, *, use_llm: bool = True, use_cache: bool = True) -> DifficultyScore:
     """Full pipeline: parse → download → transcribe → analyze → score."""
 
@@ -349,9 +431,38 @@ def main() -> None:
         help="Rescore all cached episodes using current weights. No downloads or "
              "transcription — instant results from the cache database.",
     )
+    parser.add_argument(
+        "--reanalyze",
+        action="store_true",
+        help="Re-run structural NLP analysis from cached transcriptions then rescore. "
+             "No downloads or transcription — recomputes metrics like punctuation_density.",
+    )
 
     args = parser.parse_args()
     setup_logging(args.verbose)
+
+    # --reanalyze: re-run NLP from cached transcriptions, then rescore
+    # Checked first because it's a superset of --rescore.
+    if args.reanalyze:
+        print("\n[*] Re-analyzing all cached transcriptions and rescoring...\n")
+        results = reanalyze_from_cache()
+        if not results:
+            print("  No cached data found. Run the analyzer first to build the cache.")
+            sys.exit(1)
+
+        for score in results:
+            print(format_report(score))
+
+        if len(results) > 1:
+            print(format_ranking(results))
+
+        if args.output:
+            output_data = [r.model_dump() for r in results]
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            print(f"\n[*] Results saved to {args.output}")
+
+        return
 
     # --rescore: instant rescore from cache, no network needed
     if args.rescore:
@@ -402,7 +513,7 @@ def main() -> None:
             config.USE_LOCAL_LLM = True
             config.OLLAMA_MODEL = file_settings["ollama_model"]
 
-    if not feed_urls and not args.rescore:
+    if not feed_urls and not args.rescore and not args.reanalyze:
         parser.error("Provide feed URLs as arguments or via --feeds-file.")
 
     # Apply CLI overrides to config (CLI wins over file)

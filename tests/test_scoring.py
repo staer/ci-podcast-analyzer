@@ -23,6 +23,31 @@ from src.scoring import (
     score_episode,
 )
 
+# Canonical norm_ranges and weights for tests, so that results are
+# deterministic and independent of whatever settings.json ships.
+_TEST_RANGES = {
+    "speech_rate": (60.0, 220.0),
+    "vocabulary_level": (0.02, 0.35),
+    "lexical_diversity": (0.40, 0.65),
+    "sentence_length": (2.0, 30.0),
+    "grammar_complexity": (3.0, 6.5),
+    "tense_complexity": (0.05, 0.60),
+    "slang_score": (0.0, 1.0),
+    "topic_complexity": (0.0, 1.0),
+    "clarity": (-0.30, -0.05),
+}
+_TEST_WEIGHTS = {
+    "speech_rate": 0.30,
+    "vocabulary_level": 0.18,
+    "lexical_diversity": 0.02,
+    "sentence_length": 0.05,
+    "grammar_complexity": 0.05,
+    "tense_complexity": 0.10,
+    "slang_score": 0.10,
+    "topic_complexity": 0.10,
+    "clarity": 0.10,
+}
+
 
 # ===================================================================
 # _normalise
@@ -111,10 +136,12 @@ def _make_episode_analysis(
     *,
     wpm: float = 130.0,
     pct_outside_5k: float = 0.15,
+    vocab_score: float = 0.15,
     lexical_diversity: float = 0.30,
     avg_sentence_length: float = 12.0,
     avg_parse_depth: float = 4.0,
     avg_segment_confidence: float = -0.5,
+    tense_complexity: float = 0.15,
     slang_score: float = 0.0,
     topic_complexity: float = 0.0,
     punctuation_density: float = 0.06,
@@ -138,6 +165,8 @@ def _make_episode_analysis(
         avg_sentence_length=avg_sentence_length,
         avg_parse_depth=avg_parse_depth,
         pct_outside_top_5k=pct_outside_5k,
+        vocab_score=vocab_score,
+        tense_complexity=tense_complexity,
         avg_segment_confidence=avg_segment_confidence,
         punctuation_density=punctuation_density,
     )
@@ -180,28 +209,60 @@ class TestScoreEpisode:
 
     def test_vocabulary_normalisation(self):
         lo, hi = NORM_RANGES["vocabulary_level"]
-        ea_easy = _make_episode_analysis(pct_outside_5k=lo)
+        ea_easy = _make_episode_analysis(vocab_score=lo)
         assert score_episode(ea_easy)["vocabulary_level"] == pytest.approx(0.0)
-        ea_hard = _make_episode_analysis(pct_outside_5k=hi)
+        ea_hard = _make_episode_analysis(vocab_score=hi)
         assert score_episode(ea_hard)["vocabulary_level"] == pytest.approx(1.0)
+
+    def test_vocabulary_uses_vocab_score_over_pct(self):
+        """When vocab_score > 0 it should be used instead of pct_outside_5k."""
+        # vocab_score=0.30 (high) but pct_outside_5k=0.01 (low)
+        ea = _make_episode_analysis(vocab_score=0.30, pct_outside_5k=0.01)
+        comps = score_episode(ea)
+        # Should normalise based on vocab_score, not pct_outside_5k
+        lo, hi = NORM_RANGES["vocabulary_level"]
+        expected = (0.30 - lo) / (hi - lo) if hi > lo else 0.0
+        assert comps["vocabulary_level"] == pytest.approx(max(0, min(1, expected)), abs=0.02)
+
+    def test_vocabulary_falls_back_to_pct_outside(self):
+        """When vocab_score=0 (old cache), scoring should fall back to pct_outside_5k."""
+        ea = _make_episode_analysis(vocab_score=0.0, pct_outside_5k=0.15)
+        comps = score_episode(ea)
+        lo, hi = NORM_RANGES["vocabulary_level"]
+        expected = (0.15 - lo) / (hi - lo) if hi > lo else 0.0
+        assert comps["vocabulary_level"] == pytest.approx(max(0, min(1, expected)), abs=0.02)
 
     def test_clarity_inversion(self):
         """Worse clarity (more negative) should yield a HIGHER difficulty."""
         ea_clear = _make_episode_analysis(avg_segment_confidence=-0.1)
         ea_muddy = _make_episode_analysis(avg_segment_confidence=-1.2)
-        comps_clear = score_episode(ea_clear)
-        comps_muddy = score_episode(ea_muddy)
+        comps_clear = score_episode(ea_clear, norm_ranges=_TEST_RANGES)
+        comps_muddy = score_episode(ea_muddy, norm_ranges=_TEST_RANGES)
         assert comps_muddy["clarity"] > comps_clear["clarity"]
 
     def test_clarity_best_case(self):
         """Best clarity (-0.05) → clarity difficulty ≈ 0."""
         ea = _make_episode_analysis(avg_segment_confidence=-0.05)
-        assert score_episode(ea)["clarity"] == pytest.approx(0.0, abs=0.01)
+        assert score_episode(ea, norm_ranges=_TEST_RANGES)["clarity"] == pytest.approx(0.0, abs=0.01)
 
     def test_clarity_worst_case(self):
         """Worst clarity (-0.30) → clarity difficulty ≈ 1."""
         ea = _make_episode_analysis(avg_segment_confidence=-0.30)
-        assert score_episode(ea)["clarity"] == pytest.approx(1.0, abs=0.01)
+        assert score_episode(ea, norm_ranges=_TEST_RANGES)["clarity"] == pytest.approx(1.0, abs=0.01)
+
+    def test_tense_complexity_normalisation(self):
+        """Tense complexity should normalise between the configured range."""
+        lo, hi = NORM_RANGES["tense_complexity"]
+        ea_easy = _make_episode_analysis(tense_complexity=lo)
+        assert score_episode(ea_easy)["tense_complexity"] == pytest.approx(0.0, abs=0.01)
+        ea_hard = _make_episode_analysis(tense_complexity=hi)
+        assert score_episode(ea_hard)["tense_complexity"] == pytest.approx(1.0, abs=0.01)
+
+    def test_tense_complexity_higher_is_harder(self):
+        """Higher tense complexity raw value → higher normalised score."""
+        ea_easy = _make_episode_analysis(tense_complexity=0.10)
+        ea_hard = _make_episode_analysis(tense_complexity=0.50)
+        assert score_episode(ea_easy)["tense_complexity"] < score_episode(ea_hard)["tense_complexity"]
 
     def test_empty_structural_metrics_gives_zeroes(self):
         """If no metrics are provided, defaults (0s) should normalise to 0."""
@@ -552,7 +613,10 @@ class TestRunOnSentenceDetection:
             punctuation_density=0.06,
         )
         ea_ok.llm_analysis = None
-        score_ok = compute_podcast_score("OK", "http://ok.com", [ea_ok])
+        score_ok = compute_podcast_score(
+            "OK", "http://ok.com", [ea_ok],
+            norm_ranges=_TEST_RANGES, weights_override=_TEST_WEIGHTS,
+        )
 
         # Same high values but clearly run-on (no punctuation, extreme length)
         ea_runon = _make_episode_analysis(
@@ -560,7 +624,10 @@ class TestRunOnSentenceDetection:
             punctuation_density=0.0,
         )
         ea_runon.llm_analysis = None
-        score_runon = compute_podcast_score("RunOn", "http://ro.com", [ea_runon])
+        score_runon = compute_podcast_score(
+            "RunOn", "http://ro.com", [ea_runon],
+            norm_ranges=_TEST_RANGES, weights_override=_TEST_WEIGHTS,
+        )
 
         # The run-on version should have a lower overall score because
         # both sentence_length and grammar_complexity are dampened.
@@ -575,14 +642,20 @@ class TestRunOnSentenceDetection:
             punctuation_density=0.06,
         )
         ea_ok.llm_analysis = None
-        score_ok = compute_podcast_score("OK", "http://ok.com", [ea_ok])
+        score_ok = compute_podcast_score(
+            "OK", "http://ok.com", [ea_ok],
+            norm_ranges=_TEST_RANGES, weights_override=_TEST_WEIGHTS,
+        )
 
         ea_runon = _make_episode_analysis(
             avg_parse_depth=9.0, avg_sentence_length=300.0,
             punctuation_density=0.0,
         )
         ea_runon.llm_analysis = None
-        score_runon = compute_podcast_score("RunOn", "http://ro.com", [ea_runon])
+        score_runon = compute_podcast_score(
+            "RunOn", "http://ro.com", [ea_runon],
+            norm_ranges=_TEST_RANGES, weights_override=_TEST_WEIGHTS,
+        )
 
         # Both have grammar_complexity in component_scores, but the
         # run-on version should have a lower overall score due to
@@ -609,9 +682,9 @@ class TestLexDivShortTextDampener:
     def test_long_transcript_no_dampening(self):
         """Transcripts >= 1000 words should not be dampened."""
         ea = _make_episode_analysis(lexical_diversity=0.45)  # total_words=1000
-        comps = score_episode(ea)
+        comps = score_episode(ea, norm_ranges=_TEST_RANGES)
         # With total_words=1000, confidence=1.0 → no blending
-        expected = _normalise(0.45, *NORM_RANGES["lexical_diversity"])
+        expected = _normalise(0.45, *_TEST_RANGES["lexical_diversity"])
         assert comps["lexical_diversity"] == pytest.approx(expected, abs=0.01)
 
     def test_short_transcript_dampens_toward_neutral(self):
@@ -629,11 +702,11 @@ class TestLexDivShortTextDampener:
             punctuation_density=0.06,
         )
         ea = EpisodeAnalysis(episode=ep, structural_metrics=sm)
-        comps = score_episode(ea)
+        comps = score_episode(ea, norm_ranges=_TEST_RANGES)
         # confidence = (300-200)/(1000-200) = 0.125
-        # raw normalised = _normalise(0.50, 0.20, 0.50) = 1.0
-        # dampened = 0.125 * 1.0 + 0.875 * 0.5 = 0.5625
-        assert comps["lexical_diversity"] == pytest.approx(0.5625, abs=0.02)
+        # raw normalised = _normalise(0.50, 0.40, 0.65) = 0.4
+        # dampened = 0.125 * 0.4 + 0.875 * 0.5 = 0.4875
+        assert comps["lexical_diversity"] == pytest.approx(0.4875, abs=0.02)
 
     def test_at_mattr_window_fully_dampened(self):
         """Transcript at exactly MATTR window size → fully dampened to 0.5."""

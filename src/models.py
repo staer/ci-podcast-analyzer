@@ -112,10 +112,16 @@ class StructuralMetrics(BaseModel):
     pct_outside_top_1k: float = 0.0
     pct_outside_top_5k: float = 0.0
     pct_outside_top_10k: float = 0.0
+    # Bucketed vocabulary: distribution across frequency tiers and composite score
+    vocab_distribution: dict[str, float] = Field(default_factory=dict)
+    vocab_score: float = 0.0  # weighted difficulty from frequency buckets (0-1)
     # Grammar complexity from spaCy
     avg_parse_depth: float = 0.0
     subjunctive_ratio: float = 0.0  # ratio of subjunctive verb forms
     subordinate_clause_ratio: float = 0.0
+    # Tense analysis: distribution of verb tenses and weighted complexity
+    tense_distribution: dict[str, float] = Field(default_factory=dict)
+    tense_complexity: float = 0.0  # weighted difficulty score (0-1)
     # Punctuation density: ratio of sentence-ending punct to total words.
     # Low values indicate Whisper did not reliably insert punctuation,
     # making sentence-boundary metrics (avg_sentence_length) unreliable.

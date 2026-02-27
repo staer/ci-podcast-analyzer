@@ -1,0 +1,37 @@
+{
+  "training_feeds": [
+    {
+      "name": "Cuentame",
+      "url": "https://anchor.fm/s/4baec630/podcast/rss",
+      "group": "beginner"
+    },
+    {
+      "name": "Chill Spanish",
+      "url": "https://anchor.fm/s/51d84fcc/podcast/rss",
+      "group": "easy"
+    },
+    {
+      "name": "Espanol con Juan",
+      "url": "https://1001reasonstolearnspanish.com/podcast",
+      "group": "medium"
+    },
+    {
+      "name": "The Wild Project",
+      "url": "https://feeds.megaphone.fm/TWIP9771253765",
+      "group": "hard"
+    },
+    {
+      "name": "No Es El Fin Del Mundo",
+      "url": "https://feeds.megaphone.fm/EOM2256929256",
+      "group": "native"
+    }
+  ],
+  "group_order": ["beginner", "easy", "medium", "hard", "native"],
+  "target_ranges": {
+    "beginner": [0.05, 0.15],
+    "easy":     [0.15, 0.28],
+    "medium":   [0.32, 0.48],
+    "hard":     [0.52, 0.68],
+    "native":   [0.70, 0.85]
+  }
+}

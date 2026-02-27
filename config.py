@@ -70,14 +70,17 @@ OLLAMA_MODEL = "llama3"  # Model to use (llama3, mistral, gemma2, etc.)
 # on spoken transcripts — MATTR is length-dependent and inflated on short
 # episodes; it gets a minimal weight.  Clarity (Whisper confidence) directly
 # reflects how easy the audio is to follow — clear studio recordings vs.
-# noisy conversation — and gets a meaningful weight.
+# noisy conversation — and gets a meaningful weight.  Tense complexity
+# captures how advanced the grammar is: podcasts heavy on present indicative
+# are beginner-friendly; those with subjunctive / compound tenses are harder.
 SCORING_WEIGHTS = {
-    "speech_rate": 0.35,
-    "vocabulary_level": 0.20,
+    "speech_rate": 0.30,
+    "vocabulary_level": 0.18,
     "lexical_diversity": 0.02,
     "sentence_length": 0.05,
     "grammar_complexity": 0.05,
+    "tense_complexity": 0.10,
     "slang_score": 0.10,
     "topic_complexity": 0.10,
-    "clarity": 0.13,
+    "clarity": 0.10,
 }

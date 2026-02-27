@@ -3,7 +3,9 @@ single difficulty score mapped to the CEFR scale."""
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 import numpy as np
 
@@ -18,48 +20,74 @@ from src.models import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Normalisation ranges – based on empirical observations of Spanish podcasts.
-# Each tuple is (min_value, max_value).  Values outside the range are clamped.
+# Trainable settings – loaded from settings.json so the training program
+# can optimise them without touching source code.
 # ---------------------------------------------------------------------------
-NORM_RANGES: dict[str, tuple[float, float]] = {
-    # 40 wpm = extremely slow / beginner, 200 wpm = rapid native speech.
-    # Learner podcasts sit around 60-100 wpm; native radio/debate is
-    # 160-200+ wpm.  This is the strongest difficulty signal.
-    "speech_rate": (40.0, 200.0),
-    # Fraction of words outside top-5k frequency list.
-    # Empirical range: learner podcasts 0.04-0.10, native 0.08-0.20.
-    # Floor at 0.03 (almost no podcast is below this); ceiling at 0.20
-    # so the full 0-1 band is occupied.  Anything above 0.20 clamps to 1.
-    "vocabulary_level": (0.03, 0.20),
-    # MATTR-based lexical diversity (more stable than raw TTR across
-    # different transcript lengths).
-    "lexical_diversity": (0.20, 0.50),
-    # Average words per sentence (wider: Whisper punctuation is imperfect)
-    "sentence_length": (2.0, 30.0),
-    # Average parse-tree depth.  Empirical range: learner 3.5-4.5,
-    # native 4.5-6.5.  Outlier run-on text (depth 7-39) is already
-    # handled by the sentence-confidence blender, so the norm range
-    # only needs to cover plausible punctuated text.
-    "grammar_complexity": (3.0, 7.0),
-    # LLM slang score (already 0-1)
-    "slang_score": (0.0, 1.0),
-    # LLM topic complexity (already 0-1)
-    "topic_complexity": (0.0, 1.0),
-    # Whisper avg_log_prob: more negative = less clear.
-    # We invert this so that *lower* clarity → higher difficulty.
-    # Empirical range across podcasts is roughly -0.30 to -0.04;
-    # the previous range (-1.0, -0.05) wasted normalisation space.
-    "clarity": (-0.30, -0.05),
-}
+_SETTINGS_PATH = Path(__file__).parent.parent / "settings.json"
 
-CEFR_THRESHOLDS = [
-    (0.20, "A1"),
-    (0.35, "A2"),
-    (0.50, "B1"),
-    (0.65, "B2"),
-    (0.80, "C1"),
-    (1.01, "C2"),
-]
+
+def _load_settings() -> dict:
+    """Load scoring settings from settings.json."""
+    if _SETTINGS_PATH.exists():
+        with open(_SETTINGS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    logger.warning("settings.json not found — using built-in defaults")
+    return {}
+
+
+def _get_norm_ranges() -> dict[str, tuple[float, float]]:
+    """Return normalisation ranges from settings.json (or defaults)."""
+    settings = _load_settings()
+    raw = settings.get("norm_ranges", {})
+    defaults = {
+        "speech_rate": (60.0, 220.0),
+        "vocabulary_level": (0.02, 0.35),
+        "lexical_diversity": (0.40, 0.65),
+        "sentence_length": (2.0, 30.0),
+        "grammar_complexity": (3.0, 6.5),
+        "tense_complexity": (0.05, 0.60),
+        "slang_score": (0.0, 1.0),
+        "topic_complexity": (0.0, 1.0),
+        "clarity": (-0.30, -0.05),
+    }
+    result = {}
+    for key, default in defaults.items():
+        if key in raw and len(raw[key]) == 2:
+            result[key] = (float(raw[key][0]), float(raw[key][1]))
+        else:
+            result[key] = default
+    return result
+
+
+def _get_weights() -> dict[str, float]:
+    """Return scoring weights from settings.json (or config defaults)."""
+    settings = _load_settings()
+    raw = settings.get("weights", {})
+    if raw:
+        return {k: float(v) for k, v in raw.items()}
+    return dict(config.SCORING_WEIGHTS)
+
+
+def _get_cefr_thresholds() -> list[tuple[float, str]]:
+    """Return CEFR thresholds from settings.json (or defaults)."""
+    settings = _load_settings()
+    raw = settings.get("cefr_thresholds", [])
+    if raw:
+        return [(float(pair[0]), str(pair[1])) for pair in raw]
+    return [
+        (0.20, "A1"),
+        (0.35, "A2"),
+        (0.50, "B1"),
+        (0.65, "B2"),
+        (0.80, "C1"),
+        (1.01, "C2"),
+    ]
+
+
+# Module-level references — reloaded each time scoring runs so that
+# the training program can update settings.json between iterations.
+NORM_RANGES = _get_norm_ranges()
+CEFR_THRESHOLDS = _get_cefr_thresholds()
 
 
 def _normalise(value: float, lo: float, hi: float) -> float:
@@ -69,7 +97,64 @@ def _normalise(value: float, lo: float, hi: float) -> float:
     return float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
 
 
-def score_episode(episode_analysis: EpisodeAnalysis) -> dict[str, float]:
+def reload_settings() -> None:
+    """Reload NORM_RANGES and CEFR_THRESHOLDS from settings.json.
+
+    Call this after the training program writes updated settings so that
+    subsequent score_episode / compute_podcast_score calls use the new values.
+    """
+    global NORM_RANGES, CEFR_THRESHOLDS
+    NORM_RANGES = _get_norm_ranges()
+    CEFR_THRESHOLDS = _get_cefr_thresholds()
+
+
+_MAX_WEIGHT = 0.50  # No single component may exceed 50%
+
+
+def _redistribute_llm_weights(
+    weights: dict[str, float],
+    llm_keys: set[str],
+) -> None:
+    """Redistribute LLM weights to structural keys *in-place*.
+
+    After proportional redistribution, any component exceeding
+    ``_MAX_WEIGHT`` is capped and the excess is spread evenly
+    across the remaining uncapped components (iteratively).
+    """
+    llm_total = sum(weights[k] for k in llm_keys)
+    if llm_total == 0:
+        return
+
+    structural_keys = [k for k in weights if k not in llm_keys]
+    structural_total = sum(weights[k] for k in structural_keys)
+
+    # Step 1: proportional scale-up
+    for k in structural_keys:
+        weights[k] = weights[k] / structural_total * (structural_total + llm_total)
+    for k in llm_keys:
+        weights[k] = 0.0
+
+    # Step 2: iterative cap enforcement
+    for _ in range(10):  # converges in 2-3 rounds
+        capped = {k for k in structural_keys if weights[k] > _MAX_WEIGHT}
+        if not capped:
+            break
+        excess = sum(weights[k] - _MAX_WEIGHT for k in capped)
+        for k in capped:
+            weights[k] = _MAX_WEIGHT
+        uncapped = [k for k in structural_keys if k not in capped and weights[k] > 0]
+        if not uncapped:
+            break
+        uncapped_total = sum(weights[k] for k in uncapped)
+        for k in uncapped:
+            weights[k] += excess * (weights[k] / uncapped_total)
+
+
+def score_episode(
+    episode_analysis: EpisodeAnalysis,
+    *,
+    norm_ranges: dict[str, tuple[float, float]] | None = None,
+) -> dict[str, float]:
     """Compute per-component normalised scores for one episode.
 
     Returns:
@@ -82,11 +167,13 @@ def score_episode(episode_analysis: EpisodeAnalysis) -> dict[str, float]:
     sm = episode_analysis.structural_metrics or StructuralMetrics()
     llm = episode_analysis.llm_analysis or LLMAnalysis()
 
+    ranges = norm_ranges or NORM_RANGES
+
     logger.debug(
-        "Raw metrics: wpm=%.1f, outside_5k=%.3f, lexdiv=%.3f, "
+        "Raw metrics: wpm=%.1f, vocab_score=%.3f, lexdiv=%.3f, "
         "sent_len=%.1f, parse_depth=%.1f, confidence=%.3f",
         sm.words_per_minute,
-        sm.pct_outside_top_5k,
+        sm.vocab_score,
         sm.lexical_diversity,
         sm.avg_sentence_length,
         sm.avg_parse_depth,
@@ -97,17 +184,19 @@ def score_episode(episode_analysis: EpisodeAnalysis) -> dict[str, float]:
 
     # Speech rate
     components["speech_rate"] = _normalise(
-        sm.words_per_minute, *NORM_RANGES["speech_rate"]
+        sm.words_per_minute, *ranges["speech_rate"]
     )
 
-    # Vocabulary level (% outside top 5k)
+    # Vocabulary level — use bucketed vocab_score when available,
+    # fall back to pct_outside_top_5k for old cached data.
+    vocab_raw = sm.vocab_score if sm.vocab_score > 0 else sm.pct_outside_top_5k
     components["vocabulary_level"] = _normalise(
-        sm.pct_outside_top_5k, *NORM_RANGES["vocabulary_level"]
+        vocab_raw, *ranges["vocabulary_level"]
     )
 
     # Lexical diversity
     components["lexical_diversity"] = _normalise(
-        sm.lexical_diversity, *NORM_RANGES["lexical_diversity"]
+        sm.lexical_diversity, *ranges["lexical_diversity"]
     )
 
     # --- Short-transcript lexical diversity dampener ---
@@ -137,12 +226,17 @@ def score_episode(episode_analysis: EpisodeAnalysis) -> dict[str, float]:
 
     # Sentence length
     components["sentence_length"] = _normalise(
-        sm.avg_sentence_length, *NORM_RANGES["sentence_length"]
+        sm.avg_sentence_length, *ranges["sentence_length"]
     )
 
     # Grammar complexity (parse depth)
     components["grammar_complexity"] = _normalise(
-        sm.avg_parse_depth, *NORM_RANGES["grammar_complexity"]
+        sm.avg_parse_depth, *ranges["grammar_complexity"]
+    )
+
+    # Tense complexity (weighted difficulty of verb tenses used)
+    components["tense_complexity"] = _normalise(
+        sm.tense_complexity, *ranges["tense_complexity"]
     )
 
     # --- Run-on sentence detection ---
@@ -212,18 +306,18 @@ def score_episode(episode_analysis: EpisodeAnalysis) -> dict[str, float]:
 
     # Slang (from LLM)
     components["slang_score"] = _normalise(
-        llm.slang_score, *NORM_RANGES["slang_score"]
+        llm.slang_score, *ranges["slang_score"]
     )
 
     # Topic complexity (from LLM)
     components["topic_complexity"] = _normalise(
-        llm.topic_complexity, *NORM_RANGES["topic_complexity"]
+        llm.topic_complexity, *ranges["topic_complexity"]
     )
 
     # Clarity (inverted: worse clarity = harder)
     # avg_log_prob is negative; more negative = harder to understand
     clarity_raw = sm.avg_segment_confidence if sm.avg_segment_confidence != 0 else -0.5
-    clarity_norm = _normalise(clarity_raw, *NORM_RANGES["clarity"])
+    clarity_norm = _normalise(clarity_raw, *ranges["clarity"])
     # Invert: 0 (clear) → hard-to-hear = high difficulty
     components["clarity"] = 1.0 - clarity_norm
 
@@ -241,6 +335,9 @@ def compute_podcast_score(
     podcast_title: str,
     feed_url: str,
     episode_analyses: list[EpisodeAnalysis],
+    *,
+    norm_ranges: dict[str, tuple[float, float]] | None = None,
+    weights_override: dict[str, float] | None = None,
 ) -> DifficultyScore:
     """Aggregate episode-level analyses into a single podcast difficulty score."""
 
@@ -288,7 +385,7 @@ def compute_podcast_score(
         ea for i, ea in enumerate(episode_analyses) if i in dedup_indices
     ]
 
-    weights = dict(config.SCORING_WEIGHTS)
+    weights = dict(weights_override or _get_weights())
 
     # If no episodes have LLM analysis, redistribute LLM weights
     # proportionally across the structural components so the score
@@ -296,14 +393,7 @@ def compute_podcast_score(
     has_llm = any(ea.llm_analysis is not None for ea in unique_analyses)
     llm_keys = {"slang_score", "topic_complexity"}
     if not has_llm:
-        llm_weight = sum(weights[k] for k in llm_keys)
-        structural_keys = [k for k in weights if k not in llm_keys]
-        structural_total = sum(weights[k] for k in structural_keys)
-        for k in structural_keys:
-            # Scale each structural weight proportionally to absorb the LLM share
-            weights[k] = weights[k] / structural_total * (structural_total + llm_weight)
-        for k in llm_keys:
-            weights[k] = 0.0
+        _redistribute_llm_weights(weights, llm_keys)
         logger.info(
             "No LLM analysis — redistributed weights: %s",
             {k: round(v, 3) for k, v in weights.items() if v > 0},
@@ -312,7 +402,7 @@ def compute_podcast_score(
     # Score each episode
     all_components: list[dict[str, float]] = []
     for ea in unique_analyses:
-        comps = score_episode(ea)
+        comps = score_episode(ea, norm_ranges=norm_ranges)
         all_components.append(comps)
 
     # --- Exclude severe run-on episodes ---
@@ -544,9 +634,10 @@ def format_report(score: DifficultyScore) -> str:
         lines.extend(_wrap(title_line, indent=4))
         if ea.structural_metrics:
             sm = ea.structural_metrics
+            vocab_label = f"Vocab: {sm.vocab_score:.3f}" if sm.vocab_score > 0 else f"Outside 5k: {sm.pct_outside_top_5k:.1%}"
             lines.append(
                 f"    Words: {sm.total_words}  |  WPM: {sm.words_per_minute}  |  "
-                f"Lex div: {sm.lexical_diversity:.3f}  |  Outside 5k: {sm.pct_outside_top_5k:.1%}"
+                f"Lex div: {sm.lexical_diversity:.3f}  |  {vocab_label}"
             )
         if ea.llm_analysis and ea.llm_analysis.estimated_cefr:
             la = ea.llm_analysis
@@ -571,7 +662,7 @@ def format_ranking(results: list[DifficultyScore]) -> str:
     A weights key is appended below the table.
     """
     ranked = sorted(results, key=lambda r: r.overall_score)
-    weights = dict(config.SCORING_WEIGHTS)
+    weights = _get_weights()
 
     # Detect whether any result has LLM data
     has_llm = any(
@@ -581,21 +672,16 @@ def format_ranking(results: list[DifficultyScore]) -> str:
     if not has_llm:
         # Mirror the redistribution done in compute_podcast_score
         llm_keys = {"slang_score", "topic_complexity"}
-        llm_weight = sum(weights[k] for k in llm_keys)
-        structural_keys = [k for k in weights if k not in llm_keys]
-        structural_total = sum(weights[k] for k in structural_keys)
-        for k in structural_keys:
-            weights[k] = weights[k] / structural_total * (structural_total + llm_weight)
-        for k in llm_keys:
-            weights[k] = 0.0
+        _redistribute_llm_weights(weights, llm_keys)
 
     # Column definitions: (key, short_header, full_description)
     columns: list[tuple[str, str, str]] = [
         ("speech_rate",       "SPD",  "Speech rate (words per minute)"),
-        ("vocabulary_level",  "VOC",  "Vocabulary level (% outside top-5k)"),
+        ("vocabulary_level",  "VOC",  "Vocabulary level (bucketed frequency score)"),
         ("lexical_diversity", "LEX",  "Lexical diversity (MATTR)"),
         ("sentence_length",   "SEN",  "Sentence length (avg words/sentence)"),
         ("grammar_complexity","GRM",  "Grammar complexity (parse depth)"),
+        ("tense_complexity", "TNS",  "Tense complexity (verb tense difficulty)"),
         ("slang_score",       "SLG",  "Slang usage (LLM)"),
         ("topic_complexity",  "TOP",  "Topic complexity (LLM)"),
         ("clarity",           "CLR",  "Clarity (Whisper confidence)"),

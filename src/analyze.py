@@ -15,6 +15,33 @@ from src.models import StructuralMetrics, Transcription
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Tense difficulty tiers – linguistic difficulty weights (0 = easiest)
+# ---------------------------------------------------------------------------
+TENSE_DIFFICULTY: dict[str, float] = {
+    # A1 – present indicative
+    "presente_indicativo": 0.05,
+    # A2 – basic past tenses & imperative
+    "preterito_indefinido": 0.20,
+    "preterito_imperfecto": 0.25,
+    "imperativo": 0.20,
+    # B1 – future, present perfect, conditional
+    "futuro_simple": 0.40,
+    "preterito_perfecto": 0.45,
+    "condicional": 0.50,
+    # B2 – subjunctive present, pluperfect
+    "presente_subjuntivo": 0.65,
+    "pluscuamperfecto": 0.70,
+    # C1 – advanced compound & subjunctive
+    "imperfecto_subjuntivo": 0.85,
+    "futuro_perfecto": 0.80,
+    "condicional_perfecto": 0.85,
+    "perfecto_subjuntivo": 0.80,
+    "pluscuamperfecto_subjuntivo": 0.95,
+    # Catch-all
+    "other": 0.30,
+}
+
+# ---------------------------------------------------------------------------
 # Lazy-loaded resources
 # ---------------------------------------------------------------------------
 _nlp: spacy.language.Language | None = None
@@ -30,12 +57,15 @@ def _get_nlp() -> spacy.language.Language:
 
 
 def _get_frequency_lists() -> dict[int, set[str]]:
-    """Build sets of the top 1k, 5k, and 10k Spanish words."""
+    """Build sets of the top 1k, 2k, 3k, 4k, 5k, and 10k Spanish words."""
     global _freq_lists
     if _freq_lists is None:
         logger.info("Building Spanish word frequency lists...")
         _freq_lists = {
             1_000: set(top_n_list("es", 1_000)),
+            2_000: set(top_n_list("es", 2_000)),
+            3_000: set(top_n_list("es", 3_000)),
+            4_000: set(top_n_list("es", 4_000)),
             5_000: set(top_n_list("es", 5_000)),
             10_000: set(top_n_list("es", 10_000)),
         }
@@ -43,8 +73,161 @@ def _get_frequency_lists() -> dict[int, set[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Vocabulary difficulty weights per frequency bucket
+# ---------------------------------------------------------------------------
+VOCAB_BUCKET_DIFFICULTY: dict[str, float] = {
+    "top_1k": 0.00,    # Most common words — trivial for any learner
+    "1k_2k":  0.10,    # Still very common
+    "2k_3k":  0.25,    # Conversational vocabulary
+    "3k_4k":  0.45,    # Intermediate vocabulary
+    "4k_5k":  0.65,    # Upper-intermediate vocabulary
+    "5k_plus": 1.00,   # Rare / advanced vocabulary
+}
+
+
+def _compute_vocab_score(vocab_words: list[str], freq: dict[int, set[str]]) -> tuple[dict[str, float], float]:
+    """Bucket words by frequency and compute a weighted difficulty score.
+
+    Returns:
+        (vocab_distribution, vocab_score) where distribution maps bucket
+        names to their fraction, and vocab_score is a 0–1 composite.
+    """
+    total = len(vocab_words)
+    if total == 0:
+        return {}, 0.0
+
+    # Count words in each bucket (mutually exclusive, highest band first)
+    buckets: dict[str, int] = {
+        "top_1k": 0,
+        "1k_2k": 0,
+        "2k_3k": 0,
+        "3k_4k": 0,
+        "4k_5k": 0,
+        "5k_plus": 0,
+    }
+    for w in vocab_words:
+        if w in freq[1_000]:
+            buckets["top_1k"] += 1
+        elif w in freq[2_000]:
+            buckets["1k_2k"] += 1
+        elif w in freq[3_000]:
+            buckets["2k_3k"] += 1
+        elif w in freq[4_000]:
+            buckets["3k_4k"] += 1
+        elif w in freq[5_000]:
+            buckets["4k_5k"] += 1
+        else:
+            buckets["5k_plus"] += 1
+
+    distribution = {k: round(v / total, 4) for k, v in buckets.items()}
+
+    # Weighted average of bucket difficulties
+    score = sum(
+        (count / total) * VOCAB_BUCKET_DIFFICULTY[bucket]
+        for bucket, count in buckets.items()
+    )
+    return distribution, round(score, 4)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def _classify_verb_tense(token) -> str | None:
+    """Classify a finite verb token into a Spanish tense category.
+
+    Returns ``None`` for non-finite forms (infinitive, gerund,
+    participle) that don't contribute to tense complexity.
+    """
+    verb_form = token.morph.get("VerbForm", [])
+    # Skip non-finite forms
+    if "Inf" in verb_form or "Ger" in verb_form or "Part" in verb_form:
+        return None
+
+    mood = token.morph.get("Mood", [])
+    tense = token.morph.get("Tense", [])
+
+    if "Ind" in mood:
+        if "Pres" in tense:
+            return "presente_indicativo"
+        if "Imp" in tense:
+            return "preterito_imperfecto"
+        if "Past" in tense:
+            return "preterito_indefinido"
+        if "Fut" in tense:
+            return "futuro_simple"
+        return "other"
+    if "Sub" in mood:
+        if "Pres" in tense:
+            return "presente_subjuntivo"
+        if "Imp" in tense:
+            return "imperfecto_subjuntivo"
+        return "other"
+    if "Cnd" in mood:
+        return "condicional"
+    if "Imp" in mood:
+        return "imperativo"
+
+    return "other"
+
+
+def _detect_compound_tenses(doc) -> Counter:
+    """Detect compound tenses (haber + past participle).
+
+    Returns a Counter mapping compound-tense names to their counts.
+    """
+    compounds: Counter = Counter()
+    for token in doc:
+        # Look for auxiliary "haber" whose head is a past participle
+        if token.lemma_ != "haber" or token.pos_ != "AUX":
+            continue
+        head = token.head
+        if "Part" not in head.morph.get("VerbForm", []):
+            continue
+
+        mood = token.morph.get("Mood", [])
+        tense = token.morph.get("Tense", [])
+
+        if "Ind" in mood:
+            if "Pres" in tense:
+                compounds["preterito_perfecto"] += 1
+            elif "Imp" in tense:
+                compounds["pluscuamperfecto"] += 1
+            elif "Fut" in tense:
+                compounds["futuro_perfecto"] += 1
+        elif "Cnd" in mood:
+            compounds["condicional_perfecto"] += 1
+        elif "Sub" in mood:
+            if "Pres" in tense:
+                compounds["perfecto_subjuntivo"] += 1
+            elif "Imp" in tense:
+                compounds["pluscuamperfecto_subjuntivo"] += 1
+
+    return compounds
+
+
+def _compute_tense_complexity(tense_counts: Counter) -> tuple[dict[str, float], float]:
+    """Compute tense distribution and weighted complexity score.
+
+    Returns:
+        (tense_distribution, tense_complexity) where distribution maps
+        tense names to their fraction of total, and complexity is a
+        0-1 weighted difficulty score.
+    """
+    total = sum(tense_counts.values())
+    if total == 0:
+        return {}, 0.0
+
+    distribution = {k: round(v / total, 4) for k, v in tense_counts.most_common()}
+
+    # Weighted average of difficulty scores
+    complexity = sum(
+        (count / total) * TENSE_DIFFICULTY.get(tense, TENSE_DIFFICULTY["other"])
+        for tense, count in tense_counts.items()
+    )
+    return distribution, round(complexity, 4)
+
 
 def analyze_structure(transcript: Transcription) -> StructuralMetrics:
     """Run structural / NLP analysis on a transcript.
@@ -120,6 +303,9 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
     outside_5k = sum(1 for w in vocab_words if w not in freq[5_000])
     outside_10k = sum(1 for w in vocab_words if w not in freq[10_000])
 
+    # Bucketed vocabulary score — composite difficulty from word frequency tiers
+    vocab_distribution, vocab_score = _compute_vocab_score(vocab_words, freq)
+
     # --- Grammar complexity ---
     parse_depths = [_tree_depth(sent.root) for sent in sentences]
     avg_parse_depth = (
@@ -142,6 +328,44 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
         sub_clause_count / len(sentences) if sentences else 0.0
     )
 
+    # --- Tense analysis ---
+    # Classify each finite verb into a tense category, then detect
+    # compound tenses (haber + participle) separately.
+    simple_tense_counts: Counter = Counter()
+    for t in verb_tokens:
+        tense_label = _classify_verb_tense(t)
+        if tense_label is not None:
+            simple_tense_counts[tense_label] += 1
+
+    compound_tense_counts = _detect_compound_tenses(doc)
+
+    # Merge: compound tenses override the simple classification of the
+    # auxiliary "haber" (which would appear as presente_indicativo etc.).
+    # Subtract the auxiliary counts that were reclassified as compound.
+    all_tense_counts = Counter(simple_tense_counts)
+    for compound_tense, count in compound_tense_counts.items():
+        all_tense_counts[compound_tense] += count
+        # The haber auxiliary was already counted as a simple tense
+        # (e.g. "he" → presente_indicativo).  Remove those to avoid
+        # double-counting.  Determine which simple tense haber would
+        # have been classified as from the compound name.
+        _COMPOUND_AUX_MAP = {
+            "preterito_perfecto": "presente_indicativo",
+            "pluscuamperfecto": "preterito_imperfecto",
+            "futuro_perfecto": "futuro_simple",
+            "condicional_perfecto": "condicional",
+            "perfecto_subjuntivo": "presente_subjuntivo",
+            "pluscuamperfecto_subjuntivo": "imperfecto_subjuntivo",
+        }
+        aux_tense = _COMPOUND_AUX_MAP.get(compound_tense)
+        if aux_tense and all_tense_counts[aux_tense] >= count:
+            all_tense_counts[aux_tense] -= count
+
+    # Remove zero-count entries
+    all_tense_counts = Counter({k: v for k, v in all_tense_counts.items() if v > 0})
+
+    tense_distribution, tense_complexity = _compute_tense_complexity(all_tense_counts)
+
     # --- Clarity proxy from Whisper segment confidence ---
     confidences = [
         seg.avg_log_prob
@@ -162,9 +386,13 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
         pct_outside_top_1k=round(outside_1k / total_vocab, 4),
         pct_outside_top_5k=round(outside_5k / total_vocab, 4),
         pct_outside_top_10k=round(outside_10k / total_vocab, 4),
+        vocab_distribution=vocab_distribution,
+        vocab_score=vocab_score,
         avg_parse_depth=round(avg_parse_depth, 2),
         subjunctive_ratio=round(subjunctive_ratio, 4),
         subordinate_clause_ratio=round(subordinate_clause_ratio, 4),
+        tense_distribution=tense_distribution,
+        tense_complexity=tense_complexity,
         punctuation_density=round(punctuation_density, 4),
         avg_segment_confidence=round(avg_segment_confidence, 4),
     )

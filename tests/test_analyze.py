@@ -8,7 +8,17 @@ from __future__ import annotations
 
 import pytest
 
-from src.analyze import _mattr, _tree_depth, analyze_structure
+from src.analyze import (
+    TENSE_DIFFICULTY,
+    VOCAB_BUCKET_DIFFICULTY,
+    _classify_verb_tense,
+    _compute_tense_complexity,
+    _compute_vocab_score,
+    _detect_compound_tenses,
+    _mattr,
+    _tree_depth,
+    analyze_structure,
+)
 from src.models import Transcription, TranscriptionSegment
 
 
@@ -333,3 +343,184 @@ class TestEdgeCases:
         # dramatically increase the pct_outside_top_5k score.
         # Allow some tolerance since spaCy may not tag everything perfectly.
         assert m_names.pct_outside_top_5k < m_plain.pct_outside_top_5k + 0.15
+
+
+# ===================================================================
+# Tense detection
+# ===================================================================
+
+class TestTenseDetection:
+    """Tests for verb tense classification and complexity scoring."""
+
+    def test_present_indicative_detected(self):
+        """Simple present-tense text should detect presente_indicativo."""
+        text = "Yo como pan. Ella habla español. Nosotros vivimos aquí."
+        text = " ".join([text] * 20)
+        t = _make_transcription(text)
+        m = analyze_structure(t)
+        assert "presente_indicativo" in m.tense_distribution
+        # Mostly present tense → low complexity
+        assert m.tense_complexity < 0.30
+
+    def test_past_tenses_detected(self):
+        """Text with past tenses should detect preterito forms."""
+        text = (
+            "Ayer fui al mercado. Compré muchas frutas. "
+            "Cuando era niño jugaba en el parque. Mi madre cocinaba bien."
+        )
+        text = " ".join([text] * 15)
+        t = _make_transcription(text)
+        m = analyze_structure(t)
+        # Should have some past tense forms
+        past_tenses = {"preterito_indefinido", "preterito_imperfecto"}
+        detected_tenses = set(m.tense_distribution.keys())
+        assert detected_tenses & past_tenses, (
+            f"Expected past tenses, got: {detected_tenses}"
+        )
+
+    def test_subjunctive_raises_complexity(self):
+        """Text with subjunctive should have higher complexity than indicative."""
+        simple_text = "Yo como pan. Yo vivo aquí. Yo hablo español. " * 20
+        advanced_text = (
+            "Quiero que vengas. Espero que puedas. "
+            "Dudo que sepa. Es posible que tenga razón. "
+        ) * 15
+        t_simple = _make_transcription(simple_text)
+        t_advanced = _make_transcription(advanced_text)
+        m_simple = analyze_structure(t_simple)
+        m_advanced = analyze_structure(t_advanced)
+        assert m_advanced.tense_complexity > m_simple.tense_complexity
+
+    def test_tense_distribution_sums_to_one(self):
+        """Tense distribution fractions should sum to approximately 1.0."""
+        text = (
+            "Yo como pan. Ayer fui al mercado. Mañana iré al cine. "
+            "Quiero que vengas mañana."
+        )
+        text = " ".join([text] * 15)
+        t = _make_transcription(text)
+        m = analyze_structure(t)
+        if m.tense_distribution:
+            total = sum(m.tense_distribution.values())
+            assert total == pytest.approx(1.0, abs=0.01)
+
+    def test_tense_complexity_in_valid_range(self):
+        """Tense complexity should be between 0 and 1."""
+        text = "Hola amigos. Hoy vamos a hablar sobre la vida cotidiana."
+        text = " ".join([text] * 20)
+        t = _make_transcription(text)
+        m = analyze_structure(t)
+        assert 0.0 <= m.tense_complexity <= 1.0
+
+    def test_empty_text_has_no_tenses(self):
+        """Empty transcript should have empty tense distribution."""
+        t = _make_transcription("")
+        m = analyze_structure(t)
+        assert m.tense_distribution == {}
+        assert m.tense_complexity == 0.0
+
+
+class TestComputeTenseComplexity:
+    """Unit tests for the _compute_tense_complexity helper."""
+
+    def test_empty_counts(self):
+        from collections import Counter
+        dist, score = _compute_tense_complexity(Counter())
+        assert dist == {}
+        assert score == 0.0
+
+    def test_all_present_indicative(self):
+        from collections import Counter
+        counts = Counter({"presente_indicativo": 100})
+        dist, score = _compute_tense_complexity(counts)
+        assert dist == {"presente_indicativo": 1.0}
+        assert score == pytest.approx(TENSE_DIFFICULTY["presente_indicativo"])
+
+    def test_mixed_tenses(self):
+        from collections import Counter
+        counts = Counter({
+            "presente_indicativo": 50,
+            "imperfecto_subjuntivo": 50,
+        })
+        dist, score = _compute_tense_complexity(counts)
+        expected = 0.5 * TENSE_DIFFICULTY["presente_indicativo"] + \
+                   0.5 * TENSE_DIFFICULTY["imperfecto_subjuntivo"]
+        assert score == pytest.approx(expected, abs=0.01)
+
+    def test_distribution_fractions(self):
+        from collections import Counter
+        counts = Counter({
+            "presente_indicativo": 75,
+            "futuro_simple": 25,
+        })
+        dist, score = _compute_tense_complexity(counts)
+        assert dist["presente_indicativo"] == pytest.approx(0.75, abs=0.01)
+        assert dist["futuro_simple"] == pytest.approx(0.25, abs=0.01)
+
+
+# ===================================================================
+# Vocabulary bucketed scoring
+# ===================================================================
+
+class TestComputeVocabScore:
+    """Unit tests for _compute_vocab_score."""
+
+    def test_empty_list(self):
+        freq = {n: set() for n in (1_000, 2_000, 3_000, 4_000, 5_000, 10_000)}
+        dist, score = _compute_vocab_score([], freq)
+        assert dist == {}
+        assert score == 0.0
+
+    def test_all_top_1k(self):
+        words = ["w1", "w2", "w3"]
+        freq = {
+            1_000: {"w1", "w2", "w3"},
+            2_000: {"w1", "w2", "w3"},
+            3_000: {"w1", "w2", "w3"},
+            4_000: {"w1", "w2", "w3"},
+            5_000: {"w1", "w2", "w3"},
+            10_000: {"w1", "w2", "w3"},
+        }
+        dist, score = _compute_vocab_score(words, freq)
+        assert dist["top_1k"] == pytest.approx(1.0)
+        assert score == pytest.approx(0.0)  # VOCAB_BUCKET_DIFFICULTY["top_1k"] == 0
+
+    def test_all_5k_plus(self):
+        words = ["rare1", "rare2"]
+        freq = {n: set() for n in (1_000, 2_000, 3_000, 4_000, 5_000, 10_000)}
+        dist, score = _compute_vocab_score(words, freq)
+        assert dist["5k_plus"] == pytest.approx(1.0)
+        assert score == pytest.approx(1.0)  # VOCAB_BUCKET_DIFFICULTY["5k_plus"] == 1.0
+
+    def test_mixed_buckets(self):
+        words = ["easy", "mid", "hard", "rare"]
+        freq = {
+            1_000: {"easy"},
+            2_000: {"easy", "mid"},
+            3_000: {"easy", "mid"},
+            4_000: {"easy", "mid"},
+            5_000: {"easy", "mid", "hard"},
+            10_000: {"easy", "mid", "hard"},
+        }
+        # easy → top_1k, mid → 1k_2k, hard → 4k_5k, rare → 5k_plus
+        dist, score = _compute_vocab_score(words, freq)
+        assert dist["top_1k"] == pytest.approx(0.25)
+        assert dist["1k_2k"] == pytest.approx(0.25)
+        assert dist["4k_5k"] == pytest.approx(0.25)
+        assert dist["5k_plus"] == pytest.approx(0.25)
+        expected = 0.25 * (0.00 + 0.10 + 0.65 + 1.00)
+        assert score == pytest.approx(expected, abs=0.01)
+
+    def test_distribution_sums_to_one(self):
+        words = ["a", "b", "c", "d", "e"]
+        freq = {
+            1_000: {"a"},
+            2_000: {"a", "b"},
+            3_000: {"a", "b", "c"},
+            4_000: {"a", "b", "c"},
+            5_000: {"a", "b", "c", "d"},
+            10_000: {"a", "b", "c", "d"},
+        }
+        dist, score = _compute_vocab_score(words, freq)
+        assert sum(dist.values()) == pytest.approx(1.0, abs=0.01)
+        assert 0.0 <= score <= 1.0

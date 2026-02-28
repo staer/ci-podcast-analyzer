@@ -676,15 +676,29 @@ def format_report(score: DifficultyScore) -> str:
     return "\n".join(lines)
 
 
+def _load_training_urls() -> set[str]:
+    """Return the set of feed URLs defined in training-feeds.json."""
+    training_path = config.BASE_DIR / "training-feeds.json"
+    if not training_path.exists():
+        return set()
+    try:
+        data = json.loads(training_path.read_text("utf-8"))
+        return {entry["url"] for entry in data.get("training_feeds", [])}
+    except (json.JSONDecodeError, KeyError):
+        return set()
+
+
 def format_ranking(results: list[DifficultyScore]) -> str:
     """Return a concise comparative ranking table.
 
     Fixed-width (120 cols).  Long podcast titles wrap to a continuation
     line indented under the name column rather than being truncated.
     A weights key is appended below the table.
+    Training-set podcasts are marked with an asterisk (*).
     """
     ranked = sorted(results, key=lambda r: r.overall_score)
     weights = _get_weights()
+    training_urls = _load_training_urls()
 
     # Detect whether any result has LLM data
     has_llm = any(
@@ -737,9 +751,13 @@ def format_ranking(results: list[DifficultyScore]) -> str:
 
     indent = 3 + 2  # rank + gap – continuation lines start under the name
 
+    has_training = False
     for rank, r in enumerate(ranked, 1):
         cefr = r.cefr_estimate or "??"
         title = r.podcast_title
+        if r.feed_url in training_urls:
+            title += " **"
+            has_training = True
 
         # Build the data suffix (Score + CEFR + Ep + components)
         suffix = f"  {r.overall_score:5.3f}  {cefr:>4s}  {r.episodes_analyzed:>2d}"
@@ -789,6 +807,10 @@ def format_ranking(results: list[DifficultyScore]) -> str:
         lines.append("")
         lines.append("  * LLM components excluded -- weights redistributed to structural metrics.")
         lines.append("    Use --use-llm or --local-llm for full analysis.")
+
+    if has_training:
+        lines.append("")
+        lines.append("  ** = training set podcast (used for weight calibration)")
 
     lines.append("")
     lines.append(sep)

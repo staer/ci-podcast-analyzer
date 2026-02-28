@@ -83,39 +83,58 @@ def _has_cuda() -> bool:
         return False
 
 
+_gpu_auto_applied = False
+
+
+def apply_gpu_auto_config() -> None:
+    """Auto-detect GPU and upgrade whisper config from CPU defaults.
+
+    Safe to call multiple times — only applies the upgrade once.
+    Updates config.WHISPER_MODEL_SIZE, WHISPER_BEAM_SIZE, and
+    WHISPER_COMPUTE_TYPE in place so that cache keys reflect the
+    effective settings even when the Whisper model hasn't been loaded
+    (e.g. during --rescore).
+    """
+    global _gpu_auto_applied
+    if _gpu_auto_applied:
+        return
+    _gpu_auto_applied = True
+
+    device = config.WHISPER_DEVICE
+    gpu_available = _has_cuda()
+
+    if gpu_available and device in ("auto", "cuda"):
+        if config.WHISPER_COMPUTE_TYPE == "int8":
+            config.WHISPER_COMPUTE_TYPE = "float16"
+        if config.WHISPER_MODEL_SIZE == "small":
+            config.WHISPER_MODEL_SIZE = "medium"
+        if config.WHISPER_BEAM_SIZE == 1:
+            config.WHISPER_BEAM_SIZE = 5
+        logger.info(
+            "CUDA GPU detected -- upgrading: model=%s, compute=%s, beam=%d",
+            config.WHISPER_MODEL_SIZE, config.WHISPER_COMPUTE_TYPE,
+            config.WHISPER_BEAM_SIZE,
+        )
+    elif not gpu_available and device == "auto":
+        pass  # stays on CPU defaults
+
+
 def _get_model() -> WhisperModel:
     """Lazy-load the Whisper model, auto-tuning for GPU when available."""
     global _model
     if _model is None:
+        apply_gpu_auto_config()
+
         device = config.WHISPER_DEVICE
         compute_type = config.WHISPER_COMPUTE_TYPE
         model_size = config.WHISPER_MODEL_SIZE
         beam_size = config.WHISPER_BEAM_SIZE
 
         gpu_available = _has_cuda()
-
-        # Auto-detect: upgrade settings when a GPU is present and the user
-        # hasn't explicitly pinned values via CLI / feeds file.
         if gpu_available and device in ("auto", "cuda"):
             device = "cuda"
-            # Only upgrade if still at CPU defaults
-            if compute_type == "int8":
-                compute_type = "float16"
-            if model_size == "small":
-                model_size = "medium"
-            if beam_size == 1:
-                beam_size = 5
-            logger.info(
-                "CUDA GPU detected -- upgrading: model=%s, compute=%s, beam=%d",
-                model_size, compute_type, beam_size,
-            )
         elif not gpu_available and device == "auto":
             device = "cpu"
-
-        # Store effective values back so the cache key reflects what was used
-        config.WHISPER_MODEL_SIZE = model_size
-        config.WHISPER_BEAM_SIZE = beam_size
-        config.WHISPER_COMPUTE_TYPE = compute_type
 
         cpu_threads = config.WHISPER_CPU_THREADS
         if cpu_threads == 0:

@@ -461,7 +461,10 @@ def main() -> None:
         print("\n[*] Re-analyzing all cached transcriptions and rescoring...\n")
         results = reanalyze_from_cache()
         if not results:
-            print("  No cached data found. Run the analyzer first to build the cache.")
+            print(
+                "  No cached data matching the current whisper settings was found.\n"
+                "  Run the full analyzer (without --reanalyze) to generate the cache."
+            )
             sys.exit(1)
 
         for score in results:
@@ -483,7 +486,10 @@ def main() -> None:
         print("\n[*] Rescoring all cached episodes with current weights...\n")
         results = rescore_from_cache()
         if not results:
-            print("  No cached data found. Run the analyzer first to build the cache.")
+            print(
+                "  No cached data matching the current whisper settings was found.\n"
+                "  Run the full analyzer (without --rescore) to generate the cache."
+            )
             sys.exit(1)
 
         for score in results:

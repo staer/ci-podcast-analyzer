@@ -33,7 +33,14 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 
 def current_whisper_params() -> WhisperParams:
-    """Snapshot the active Whisper settings from config."""
+    """Snapshot the active Whisper settings from config.
+
+    Triggers GPU auto-detection first so that the returned params
+    reflect the effective settings (e.g. model=medium, beam=5 on
+    GPU machines) even when the Whisper model hasn't been loaded.
+    """
+    from src.transcribe import apply_gpu_auto_config
+    apply_gpu_auto_config()
     return WhisperParams(
         model_size=config.WHISPER_MODEL_SIZE,
         beam_size=config.WHISPER_BEAM_SIZE,
@@ -217,29 +224,74 @@ def save_cached_llm_analysis(
 def scan_cached_analyses() -> dict[str, list[CachedAnalysis]]:
     """Scan data/cache/ for all an_*.json files and group by feed_url.
 
+    Only includes entries whose whisper_params match the current config.
+    Deduplicates by episode_url within each feed (most recent wins).
+
+    If cache files exist but none match the current whisper settings, an
+    empty dict is returned so the caller can warn and exit.
+
     Returns a dict mapping feed_url → list[CachedAnalysis].
     Episodes with no feed_url (legacy cache files) are grouped under
     an empty-string key.
     """
-    results: dict[str, list[CachedAnalysis]] = {}
     cache_dir = config.CACHE_DIR
     if not cache_dir.exists():
-        return results
+        return {}
+
+    params = current_whisper_params()
+
+    # Collect entries that match the current whisper params, deduplicating
+    # by (feed_url, episode_url) — most recent cached_at wins.
+    best: dict[tuple[str, str], CachedAnalysis] = {}
+    total_scanned = 0
+    total_matched = 0
 
     for path in sorted(cache_dir.glob("an_*.json")):
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             cached = CachedAnalysis.model_validate(raw)
-            key = cached.feed_url or ""
-            results.setdefault(key, []).append(cached)
         except Exception as exc:
             logger.warning("Skipping invalid cache file %s: %s", path.name, exc)
+            continue
 
-    logger.info(
-        "Cache scan: found %d analysis files across %d feed(s)",
-        sum(len(v) for v in results.values()),
-        len(results),
-    )
+        total_scanned += 1
+
+        if cached.whisper_params != params:
+            continue
+
+        total_matched += 1
+        key = (cached.feed_url or "", cached.episode_url)
+        existing = best.get(key)
+
+        if existing is None or (cached.cached_at or "") > (existing.cached_at or ""):
+            best[key] = cached
+
+    # Group by feed_url
+    results: dict[str, list[CachedAnalysis]] = {}
+    for (feed_url, _ep_url), cached in best.items():
+        results.setdefault(feed_url, []).append(cached)
+
+    included = sum(len(v) for v in results.values())
+
+    if total_scanned > 0 and included == 0:
+        logger.warning(
+            "Cache has %d file(s) but none match current whisper params "
+            "(model=%s, beam=%d, max_min=%d, skip=%d, half=%s). "
+            "Re-run the full analyzer to regenerate the cache.",
+            total_scanned,
+            params.model_size,
+            params.beam_size,
+            params.max_transcribe_minutes,
+            params.skip_intro_seconds,
+            params.first_half_only,
+        )
+    else:
+        logger.info(
+            "Cache scan: %d files scanned, %d matched current params, "
+            "%d unique episodes across %d feed(s)",
+            total_scanned, total_matched, included, len(results),
+        )
+
     return results
 
 

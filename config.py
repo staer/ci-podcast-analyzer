@@ -78,9 +78,11 @@ SCORING_WEIGHTS = {
     "vocabulary_level": 0.18,
     "lexical_diversity": 0.02,
     "sentence_length": 0.05,
-    "grammar_complexity": 0.05,
+    "grammar_complexity": 0.02,
     "tense_complexity": 0.10,
+    "subjunctive_ratio": 0.05,
+    "subordinate_clause_ratio": 0.03,
     "slang_score": 0.10,
     "topic_complexity": 0.10,
-    "clarity": 0.10,
+    "clarity": 0.05,
 }

@@ -56,6 +56,8 @@ COMPONENTS = [
     "sentence_length",
     "grammar_complexity",
     "tense_complexity",
+    "subjunctive_ratio",
+    "subordinate_clause_ratio",
     "slang_score",
     "topic_complexity",
     "clarity",
@@ -71,6 +73,8 @@ STRUCTURAL = [
     "sentence_length",
     "grammar_complexity",
     "tense_complexity",
+    "subjunctive_ratio",
+    "subordinate_clause_ratio",
     "clarity",
 ]
 
@@ -83,6 +87,7 @@ LLM_KEYS = {"slang_score", "topic_complexity"}
 FIXED_RANGES: dict[str, tuple[float, float]] = {
     "speech_rate": (60.0, 220.0),
     "clarity": (0.005, 0.12),
+    "subordinate_clause_ratio": (0.2, 3.0),
 }
 
 # Components whose norm-ranges ARE part of the optimised parameter vector
@@ -356,6 +361,7 @@ def compute_loss(
         "sentence_length":   59.0,
         "grammar_complexity": 11.0,
         "tense_complexity":  0.60,
+        "subjunctive_ratio": 0.10,
         "slang_score":       1.0,
         "topic_complexity":  1.0,
     }
@@ -377,6 +383,7 @@ def compute_loss(
         "sentence_length":   (1.0, 60.0),
         "grammar_complexity": (1.0, 12.0),
         "tense_complexity":  (0.0, 0.60),
+        "subjunctive_ratio": (0.0, 0.10),
         "slang_score":       (0.0, 1.0),
         "topic_complexity":  (0.0, 1.0),
     }
@@ -488,6 +495,7 @@ def compute_loss_breakdown(
         "vocabulary_level": 0.40,
         "lexical_diversity": 0.75, "sentence_length": 59.0,
         "grammar_complexity": 11.0, "tense_complexity": 0.60,
+        "subjunctive_ratio": 0.10,
         "slang_score": 1.0, "topic_complexity": 1.0,
     }
     narrow = 0.0
@@ -504,6 +512,7 @@ def compute_loss_breakdown(
         "vocabulary_level": (0.0, 0.40),
         "lexical_diversity": (0.15, 0.90), "sentence_length": (1.0, 60.0),
         "grammar_complexity": (1.0, 12.0), "tense_complexity": (0.0, 0.60),
+        "subjunctive_ratio": (0.0, 0.10),
         "slang_score": (0.0, 1.0), "topic_complexity": (0.0, 1.0),
     }
     floor_pen = 0.0
@@ -539,6 +548,7 @@ def get_bounds(current_ranges: dict[str, tuple[float, float]]) -> list[tuple[flo
         "sentence_length":   (1.0, 60.0),
         "grammar_complexity": (1.0, 12.0),
         "tense_complexity":  (0.0, 0.60),
+        "subjunctive_ratio": (0.0, 0.10),
         "slang_score":       (0.0, 1.0),
         "topic_complexity":  (0.0, 1.0),
     }

@@ -46,6 +46,8 @@ def _get_norm_ranges() -> dict[str, tuple[float, float]]:
         "sentence_length": (2.0, 30.0),
         "grammar_complexity": (3.0, 6.5),
         "tense_complexity": (0.05, 0.60),
+        "subjunctive_ratio": (0.0, 0.10),
+        "subordinate_clause_ratio": (0.2, 3.0),
         "slang_score": (0.0, 1.0),
         "topic_complexity": (0.0, 1.0),
         "clarity": (0.005, 0.12),
@@ -239,6 +241,20 @@ def score_episode(
         sm.tense_complexity, *ranges["tense_complexity"]
     )
 
+    # Subjunctive ratio (fraction of verbs in subjunctive mood)
+    # Subjunctive is the canonical B2+ marker in Spanish pedagogy.
+    components["subjunctive_ratio"] = _normalise(
+        sm.subjunctive_ratio, *ranges["subjunctive_ratio"]
+    )
+
+    # Subordinate clause ratio (subordinating deps per sentence)
+    # Well-established text complexity measure (Lu 2010, Ortega 2003).
+    # Like sentence_length & grammar_complexity, this metric is distorted
+    # by run-on text, so we apply the same sentence-confidence dampening.
+    components["subordinate_clause_ratio"] = _normalise(
+        sm.subordinate_clause_ratio, *ranges["subordinate_clause_ratio"]
+    )
+
     # --- Run-on sentence detection ---
     # When Whisper omits punctuation the transcript becomes one giant
     # "sentence", inflating both avg_sentence_length AND avg_parse_depth
@@ -254,7 +270,8 @@ def score_episode(
     #      run-on text.
     #
     # The confidence factor is used by compute_podcast_score to dampen
-    # the weights of both sentence_length and grammar_complexity.
+    # the weights of sentence_length, grammar_complexity, and
+    # subordinate_clause_ratio.
     _PUNCT_DENSITY_OK = 0.03   # density at or above this → full confidence
     _PUNCT_DENSITY_MIN = 0.005 # density at or below this → check fallback
     _SENT_LEN_OK = 30.0        # avg words/sentence considered plausible
@@ -290,7 +307,7 @@ def score_episode(
     # the component becomes exactly 0.5 ("unknown"); at confidence=1 the
     # original value is kept.
     if sentence_confidence < 1.0:
-        for key in ("sentence_length", "grammar_complexity"):
+        for key in ("sentence_length", "grammar_complexity", "subordinate_clause_ratio"):
             original = components[key]
             components[key] = round(
                 sentence_confidence * original + (1.0 - sentence_confidence) * _NEUTRAL,
@@ -481,7 +498,7 @@ def compute_podcast_score(
     # redistribute to the remaining components.
     sent_confs = [c.get("_sentence_confidence", 1.0) for c in kept_components]
     avg_sent_conf = float(np.mean(sent_confs)) if sent_confs else 1.0
-    dampened_keys = ["sentence_length", "grammar_complexity"]
+    dampened_keys = ["sentence_length", "grammar_complexity", "subordinate_clause_ratio"]
     if avg_sent_conf < 1.0:
         total_freed = 0.0
         for dk in dampened_keys:
@@ -505,7 +522,7 @@ def compute_podcast_score(
         logger.info(
             "Sentence-boundary weights dampened (confidence %.2f): %s",
             avg_sent_conf,
-            {k: round(weights[k], 4) for k in dampened_keys},
+            {k: round(weights[k], 4) for k in dampened_keys if k in weights},
         )
 
     # Weighted sum
@@ -687,6 +704,8 @@ def format_ranking(results: list[DifficultyScore]) -> str:
         ("sentence_length",   "SEN",  "Sentence length (avg words/sentence)"),
         ("grammar_complexity","GRM",  "Grammar complexity (parse depth)"),
         ("tense_complexity", "TNS",  "Tense complexity (verb tense difficulty)"),
+        ("subjunctive_ratio","SUB",  "Subjunctive ratio (B2+ verb mood)"),
+        ("subordinate_clause_ratio","SCR",  "Subordination density (clauses/sentence)"),
         ("slang_score",       "SLG",  "Slang usage (LLM)"),
         ("topic_complexity",  "TOP",  "Topic complexity (LLM)"),
         ("clarity",           "CLR",  "Clarity (word-level Whisper confidence)"),

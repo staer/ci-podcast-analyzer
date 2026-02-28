@@ -79,6 +79,30 @@
     {
       "name": "Black Mango",
       "url": "https://anchor.fm/s/e0c735b8/podcast/rss"
+    },
+    {
+      "name": "Dreaming Spanish",
+      "url": "https://rss.buzzsprout.com/2404122.rss"
+    },
+    {
+      "name": "Learn spanish and go",
+      "url": "https://rss.buzzsprout.com/1040905.rss"
+    },
+    {
+      "name": "Historia en Podcast",
+      "url": "https://feeds.megaphone.fm/ADSMOVILESPAASL6591275552"
+    },
+    {
+      "name": "Chisme Corporativo",
+      "url": "https://feeds.megaphone.fm/chismecorporativopodcast"
+    },
+    {
+      "name": "que pasa",
+      "url": "https://feeds.ivoox.com/feed_fg_f11200313_filtro_1.xml",
+    },
+    {
+      "name": "Pocket Spanish",
+      "url": "https://anchor.fm/s/d50c882c/podcast/rss"
     }
   ]
 }

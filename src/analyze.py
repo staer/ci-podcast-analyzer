@@ -294,10 +294,14 @@ def analyze_structure(transcript: Transcription) -> StructuralMetrics:
     )
 
     # --- Vocabulary level ---
-    # Exclude proper nouns (PROPN): names, places, brands inflate rare-word
-    # counts without reflecting actual podcast difficulty for learners.
+    # Keep only content words (NOUN, VERB, ADJ, ADV).  Function words
+    # (determiners, prepositions, pronouns, conjunctions, auxiliaries) are
+    # almost always top-1K and dilute the rare-word signal — filtering them
+    # out nearly doubles the discriminative spread between beginner and
+    # native podcasts.  Proper nouns are also excluded (not in the set).
+    _CONTENT_POS = {"NOUN", "VERB", "ADJ", "ADV"}
     freq = _get_frequency_lists()
-    vocab_words = [t.text.lower() for t in tokens if t.pos_ != "PROPN" and t.text.isalpha()]
+    vocab_words = [t.text.lower() for t in tokens if t.pos_ in _CONTENT_POS and t.text.isalpha()]
     total_vocab = len(vocab_words) or 1
     outside_1k = sum(1 for w in vocab_words if w not in freq[1_000])
     outside_5k = sum(1 for w in vocab_words if w not in freq[5_000])

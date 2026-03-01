@@ -454,26 +454,33 @@ def compute_podcast_score(
         ea for i, ea in enumerate(unique_analyses) if i not in excluded_runon_indices
     ]
 
-    # Outlier trimming: drop the N highest-scoring episodes to prevent
-    # a single atypical episode from skewing the podcast average.
+    # IQR-based outlier removal: drop episodes whose weighted score falls
+    # outside the Tukey fences (Q1 - k*IQR, Q3 + k*IQR).  This adaptively
+    # removes 0-N outliers from both tails.
     trimmed_indices: list[int] = []
-    trim_count = getattr(config, "OUTLIER_TRIM_COUNT", 1)
-    trim_min = getattr(config, "OUTLIER_TRIM_MIN_EPISODES", 4)
-    if trim_count > 0 and len(scoring_components) >= trim_min:
-        # Compute a quick weighted score per episode for ranking
-        episode_scores = []
-        for i, comps in enumerate(scoring_components):
-            s = sum(comps.get(k, 0.0) * weights[k] for k in weights)
-            episode_scores.append((s, i))
-        episode_scores.sort(reverse=True)
-        # Trim the top N outliers
-        for _, idx in episode_scores[:trim_count]:
-            trimmed_indices.append(idx)
-            title = scoring_analyses[idx].episode.title
-            logger.info(
-                "Trimmed outlier episode: '%s' (score=%.3f)",
-                title, episode_scores[0][0],
-            )
+    iqr_k = getattr(config, "OUTLIER_IQR_MULTIPLIER", 1.5)
+    trim_min = getattr(config, "OUTLIER_MIN_EPISODES", 5)
+    if iqr_k > 0 and len(scoring_components) >= trim_min:
+        # Compute a weighted score per episode
+        episode_scores = np.array([
+            sum(comps.get(k, 0.0) * weights[k] for k in weights)
+            for comps in scoring_components
+        ])
+        q1 = float(np.percentile(episode_scores, 25))
+        q3 = float(np.percentile(episode_scores, 75))
+        iqr = q3 - q1
+        lower_fence = q1 - iqr_k * iqr
+        upper_fence = q3 + iqr_k * iqr
+
+        for i, score_val in enumerate(episode_scores):
+            if score_val < lower_fence or score_val > upper_fence:
+                trimmed_indices.append(i)
+                title = scoring_analyses[i].episode.title
+                direction = "high" if score_val > upper_fence else "low"
+                logger.info(
+                    "IQR outlier (%s): '%s' (score=%.3f, fences=%.3f–%.3f)",
+                    direction, title, score_val, lower_fence, upper_fence,
+                )
 
     # Build the kept list
     kept_components = [
@@ -551,6 +558,7 @@ def compute_podcast_score(
         cefr_estimate=cefr,
         component_scores=avg_components,
         episodes_analyzed=len(kept_analyses),
+        total_episodes=len(scoring_components),
         episode_results=episode_analyses,  # keep all (incl. dupes) for the report
         trimmed_episodes=trimmed_titles + excluded_titles,
     )
@@ -613,8 +621,11 @@ def format_report(score: DifficultyScore) -> str:
     mode = "Structural + LLM" if has_llm else "Structural only (no LLM)"
 
     ep_label = str(score.episodes_analyzed)
+    total = score.total_episodes if score.total_episodes else score.episodes_analyzed
+    if total != score.episodes_analyzed:
+        ep_label = f"{score.episodes_analyzed}/{total}"
     if score.trimmed_episodes:
-        ep_label += f" (+ {len(score.trimmed_episodes)} outlier trimmed)"
+        ep_label += f" ({len(score.trimmed_episodes)} outlier trimmed)"
 
     sep = "=" * WIDTH
 
@@ -728,14 +739,14 @@ def format_ranking(results: list[DifficultyScore]) -> str:
     # Filter to active columns (non-zero weight)
     active = [(k, hdr, desc) for k, hdr, desc in columns if weights.get(k, 0) > 0]
 
-    # Fixed layout: #(3) + gap(2) + Name(variable) + gap(2) + Score(5) + gap(2) + CEFR(4) + gap(2) + Ep(2)
+    # Fixed layout: #(3) + gap(2) + Name(variable) + gap(2) + Score(5) + gap(2) + CEFR(4) + gap(2) + Ep(5)
     # then each component col = gap(1) + val(5)  →  6 per component
-    meta_w = 3 + 2 + 2 + 5 + 2 + 4 + 2 + 2  # 22 chars for #, Score, CEFR, Ep + gaps
+    meta_w = 3 + 2 + 2 + 5 + 2 + 4 + 2 + 5  # 25 chars for #, Score, CEFR, Ep + gaps
     comp_w = len(active) * 6                   # 6 chars per component column
     name_w = WIDTH - meta_w - comp_w           # remainder goes to the name column
 
     # Build header
-    hdr = f"{'#':>3s}  {'Podcast':<{name_w}s}  {'Score':>5s}  {'CEFR':>4s}  {'Ep':>2s}"
+    hdr = f"{'#':>3s}  {'Podcast':<{name_w}s}  {'Score':>5s}  {'CEFR':>4s}  {'Ep':>5s}"
     for _, h, _ in active:
         hdr += f" {h:>5s}"
     sep = "-" * WIDTH
@@ -760,7 +771,12 @@ def format_ranking(results: list[DifficultyScore]) -> str:
             has_training = True
 
         # Build the data suffix (Score + CEFR + Ep + components)
-        suffix = f"  {r.overall_score:5.3f}  {cefr:>4s}  {r.episodes_analyzed:>2d}"
+        total = r.total_episodes if r.total_episodes else r.episodes_analyzed
+        if total != r.episodes_analyzed:
+            ep_str = f"{r.episodes_analyzed}/{total}"
+        else:
+            ep_str = str(r.episodes_analyzed)
+        suffix = f"  {r.overall_score:5.3f}  {cefr:>4s}  {ep_str:>5s}"
         for key, _, _ in active:
             val = r.component_scores.get(key, 0.0)
             suffix += f" {val:5.3f}"

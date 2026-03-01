@@ -165,7 +165,8 @@ class DifficultyScore(BaseModel):
     overall_score: float = 0.0        # 0 (easiest) to 1 (hardest)
     cefr_estimate: str = ""           # Mapped from overall_score
     component_scores: dict[str, float] = Field(default_factory=dict)
-    episodes_analyzed: int = 0
+    episodes_analyzed: int = 0        # episodes kept after outlier removal
+    total_episodes: int = 0           # episodes considered before outlier removal
     episode_results: list[EpisodeAnalysis] = Field(default_factory=list)
     trimmed_episodes: list[str] = Field(default_factory=list)  # titles of outlier-trimmed episodes
 

@@ -1,36 +1,36 @@
 {
   "norm_ranges": {
     "vocabulary_level": [
-      0.0396,
-      0.3768
+      0.145,
+      0.2831
     ],
     "lexical_diversity": [
-      0.222,
-      0.6787
+      0.5346,
+      0.8796
     ],
     "sentence_length": [
-      2.0017,
-      45.6285
+      7.085,
+      35.2424
     ],
     "grammar_complexity": [
-      2.1422,
-      6.2641
+      2.2578,
+      8.6182
     ],
     "tense_complexity": [
-      0.0997,
-      0.3127
+      0.1934,
+      0.4832
     ],
     "subjunctive_ratio": [
-      0.0052,
-      0.0367
+      0.0256,
+      0.0773
     ],
     "slang_score": [
-      0.0555,
-      0.4891
+      0.1632,
+      0.8587
     ],
     "topic_complexity": [
-      0.469,
-      0.8107
+      0.3369,
+      0.8377
     ],
     "speech_rate": [
       60.0,
@@ -46,17 +46,17 @@
     ]
   },
   "weights": {
-    "speech_rate": 0.191603,
-    "vocabulary_level": 0.030773,
-    "lexical_diversity": 0.045891,
-    "sentence_length": 0.073188,
-    "grammar_complexity": 0.05439,
-    "tense_complexity": 0.179674,
-    "subjunctive_ratio": 0.14746,
-    "subordinate_clause_ratio": 0.058623,
-    "clarity": 0.018398,
-    "slang_score": 0.1,
-    "topic_complexity": 0.1
+    "speech_rate": 0.356322,
+    "vocabulary_level": 0.154758,
+    "lexical_diversity": 0.023475,
+    "sentence_length": 0.044893,
+    "grammar_complexity": 0.049759,
+    "tense_complexity": 0.024661,
+    "subjunctive_ratio": 0.03215,
+    "subordinate_clause_ratio": 0.082912,
+    "clarity": 0.03107,
+    "topic_complexity": 0.1,
+    "slang_score": 0.1
   },
   "cefr_thresholds": [
     [

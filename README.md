@@ -195,8 +195,8 @@ When 4 or more episodes are analyzed, the single highest-scoring (hardest) episo
 Trimmed episodes are still shown in the report, marked with `[TRIMMED]`. The feature is configurable in `config.py`:
 
 ```python
-OUTLIER_TRIM_COUNT = 1          # Number of outliers to drop (0 = disable)
-OUTLIER_TRIM_MIN_EPISODES = 4   # Only trim when we have at least this many
+OUTLIER_IQR_MULTIPLIER = 1.5    # Tukey fence multiplier (0 = disable)
+OUTLIER_MIN_EPISODES = 5        # Only trim when we have at least this many
 ```
 
 ## Output

@@ -482,12 +482,12 @@ def _make_ea(title: str, wpm: float, outside_5k: float = 0.1) -> EpisodeAnalysis
 
 
 class TestOutlierTrimming:
-    """Outlier trimming: drop the highest-scoring episode when we have enough."""
+    """IQR-based outlier removal: drop episodes outside Tukey fences."""
 
-    def test_trims_highest_scorer(self, monkeypatch):
-        """The episode with the hardest metrics should be excluded."""
-        monkeypatch.setattr("config.OUTLIER_TRIM_COUNT", 1)
-        monkeypatch.setattr("config.OUTLIER_TRIM_MIN_EPISODES", 4)
+    def test_trims_extreme_outlier(self, monkeypatch):
+        """An episode far outside the IQR fences should be excluded."""
+        monkeypatch.setattr("config.OUTLIER_IQR_MULTIPLIER", 1.5)
+        monkeypatch.setattr("config.OUTLIER_MIN_EPISODES", 4)
         episodes = [
             _make_ea("easy1", wpm=60, outside_5k=0.05),
             _make_ea("easy2", wpm=65, outside_5k=0.06),
@@ -498,11 +498,12 @@ class TestOutlierTrimming:
         result = compute_podcast_score("Test", "http://test.com", episodes)
         assert "hard_outlier" in result.trimmed_episodes
         assert result.episodes_analyzed == 4
+        assert result.total_episodes == 5
 
     def test_no_trim_below_minimum(self, monkeypatch):
         """With fewer episodes than the minimum, no trimming should occur."""
-        monkeypatch.setattr("config.OUTLIER_TRIM_COUNT", 1)
-        monkeypatch.setattr("config.OUTLIER_TRIM_MIN_EPISODES", 4)
+        monkeypatch.setattr("config.OUTLIER_IQR_MULTIPLIER", 1.5)
+        monkeypatch.setattr("config.OUTLIER_MIN_EPISODES", 4)
         episodes = [
             _make_ea("ep1", wpm=60),
             _make_ea("ep2", wpm=200),  # outlier, but only 2 eps
@@ -512,8 +513,8 @@ class TestOutlierTrimming:
         assert result.episodes_analyzed == 2
 
     def test_trim_disabled(self, monkeypatch):
-        """Setting OUTLIER_TRIM_COUNT=0 disables trimming entirely."""
-        monkeypatch.setattr("config.OUTLIER_TRIM_COUNT", 0)
+        """Setting OUTLIER_IQR_MULTIPLIER=0 disables trimming entirely."""
+        monkeypatch.setattr("config.OUTLIER_IQR_MULTIPLIER", 0)
         episodes = [
             _make_ea("ep1", wpm=60),
             _make_ea("ep2", wpm=200),
@@ -526,9 +527,9 @@ class TestOutlierTrimming:
         assert result.episodes_analyzed == 5
 
     def test_trimming_lowers_score(self, monkeypatch):
-        """Removing the hardest outlier should reduce the overall score."""
-        monkeypatch.setattr("config.OUTLIER_TRIM_COUNT", 1)
-        monkeypatch.setattr("config.OUTLIER_TRIM_MIN_EPISODES", 4)
+        """Removing a high outlier should reduce the overall score."""
+        monkeypatch.setattr("config.OUTLIER_IQR_MULTIPLIER", 1.5)
+        monkeypatch.setattr("config.OUTLIER_MIN_EPISODES", 4)
         episodes = [
             _make_ea("ep1", wpm=60, outside_5k=0.05),
             _make_ea("ep2", wpm=65, outside_5k=0.06),
@@ -538,15 +539,31 @@ class TestOutlierTrimming:
         ]
         trimmed = compute_podcast_score("Test", "http://test.com", episodes)
 
-        monkeypatch.setattr("config.OUTLIER_TRIM_COUNT", 0)
+        monkeypatch.setattr("config.OUTLIER_IQR_MULTIPLIER", 0)
         untrimmed = compute_podcast_score("Test", "http://test.com", episodes)
 
         assert trimmed.overall_score < untrimmed.overall_score
 
+    def test_no_trim_when_cluster_is_tight(self, monkeypatch):
+        """When all episodes are similar, IQR should not trim any."""
+        monkeypatch.setattr("config.OUTLIER_IQR_MULTIPLIER", 1.5)
+        monkeypatch.setattr("config.OUTLIER_MIN_EPISODES", 4)
+        episodes = [
+            _make_ea("ep1", wpm=60, outside_5k=0.05),
+            _make_ea("ep2", wpm=62, outside_5k=0.05),
+            _make_ea("ep3", wpm=65, outside_5k=0.06),
+            _make_ea("ep4", wpm=58, outside_5k=0.05),
+            _make_ea("ep5", wpm=63, outside_5k=0.06),
+        ]
+        result = compute_podcast_score("Test", "http://test.com", episodes)
+        assert result.trimmed_episodes == []
+        assert result.episodes_analyzed == 5
+        assert result.total_episodes == 5
+
     def test_report_shows_trimmed_label(self, monkeypatch):
         """The report should show [TRIMMED] next to excluded episodes."""
-        monkeypatch.setattr("config.OUTLIER_TRIM_COUNT", 1)
-        monkeypatch.setattr("config.OUTLIER_TRIM_MIN_EPISODES", 4)
+        monkeypatch.setattr("config.OUTLIER_IQR_MULTIPLIER", 1.5)
+        monkeypatch.setattr("config.OUTLIER_MIN_EPISODES", 4)
         episodes = [
             _make_ea("ep1", wpm=60),
             _make_ea("ep2", wpm=65),
@@ -561,8 +578,8 @@ class TestOutlierTrimming:
 
     def test_all_episodes_in_results(self, monkeypatch):
         """All episodes (including trimmed) should appear in episode_results."""
-        monkeypatch.setattr("config.OUTLIER_TRIM_COUNT", 1)
-        monkeypatch.setattr("config.OUTLIER_TRIM_MIN_EPISODES", 4)
+        monkeypatch.setattr("config.OUTLIER_IQR_MULTIPLIER", 1.5)
+        monkeypatch.setattr("config.OUTLIER_MIN_EPISODES", 4)
         episodes = [
             _make_ea("ep1", wpm=60),
             _make_ea("ep2", wpm=65),
@@ -575,6 +592,7 @@ class TestOutlierTrimming:
         assert "hard_one" in titles  # still in the full list
         assert len(result.episode_results) == 5
         assert result.episodes_analyzed == 4  # but not counted
+        assert result.total_episodes == 5
 
 
 # ===================================================================
@@ -827,8 +845,8 @@ class TestRunOnExclusion:
         clean = [self._make_clean(wpm=80.0 + i) for i in range(4)]
         runon = [self._make_runon(wpm=80.0)]
         score = compute_podcast_score("Mix", "http://m.com", clean + runon)
-        # 4 clean kept (minus 1 outlier trim) = 3 scored
-        assert score.episodes_analyzed == 3
+        # 4 clean kept (IQR won't trim tight cluster) = 4 scored
+        assert score.episodes_analyzed == 4
 
     def test_runon_kept_when_not_enough_clean(self):
         """If fewer than 3 clean episodes, run-on episodes must be kept."""

@@ -37,11 +37,11 @@ DOWNLOAD_TIMEOUT_SECONDS = 300
 PREFER_LONGER_THRESHOLD = 600   # 10 minutes
 
 # --- Scoring settings ---
-# When we have enough episodes, drop the single highest-scoring outlier
-# before averaging.  This prevents one atypical episode from skewing the
-# podcast score.  Set to 0 to disable.
-OUTLIER_TRIM_COUNT = 1
-OUTLIER_TRIM_MIN_EPISODES = 4   # Only trim when we have at least this many
+# IQR-based outlier removal: episodes whose weighted score falls outside
+# Q1 - k*IQR or Q3 + k*IQR are dropped before averaging.  k=1.5 is the
+# standard Tukey fence.  Set to 0 to disable outlier removal entirely.
+OUTLIER_IQR_MULTIPLIER = 1.5
+OUTLIER_MIN_EPISODES = 5       # Only trim when we have at least this many
 
 # --- Analysis settings ---
 SPACY_MODEL = "es_core_news_lg"
